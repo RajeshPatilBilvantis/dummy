@@ -114,3 +114,27 @@ LEFT JOIN ClientOpportunityMetrics AS opp
 
 WHERE
     ret.axa_party_id IS NOT NULL; -- Ensure we only model for clients with a valid ID
+
+
+
+
+
+This query builds a complete 360-degree profile for each client.
+
+It starts by gathering core demographics like the client's age, state, and segment.
+
+It then captures their financial value, including total assets held with the firm (AUM)...
+
+...and their estimated total external wealth (stocks, bonds).
+
+The client's tenure and total number of active policies are included to show loyalty.
+
+Crucially, it flags exactly which product categories the client already owns.
+
+It measures client engagement by counting their past activities and sales opportunities.
+
+This includes tracking total calls and positive interaction outcomes.
+
+Finally, it adds key details about the client's servicing agent.
+
+This includes the agent's experience, rank, and any elite memberships.
