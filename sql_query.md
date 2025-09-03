@@ -1,3 +1,4 @@
+-- CORRECTED VERSION
 -- This query creates a unified, 360-degree view of each client for ML modeling.
 -- Each row represents a single client, identified by axa_party_id.
 
@@ -37,10 +38,11 @@ ClientOpportunityMetrics AS (
 ClientPolicySummary AS (
     SELECT
         axa_party_id,
-        AVG(DATEDIFF(CURRENT_DATE, isrd_brth_date) / 365.25) as avg_client_age, -- Using AVG in case of multiple entries
-        MAX(we_total_assets) as estimated_total_wealth,
-        MAX(we_assetmix_stocks) as estimated_stock_wealth,
-        MAX(we_assetmix_bonds) as estimated_bond_wealth
+        AVG(DATEDIFF(CURRENT_DATE, isrd_brth_date) / 365.25) as avg_client_age,
+        -- **FIXED HERE: Changed 'we_' to 'wc_'**
+        MAX(wc_total_assets) as estimated_total_wealth,
+        MAX(wc_assetmix_stocks) as estimated_stock_wealth,
+        MAX(wc_assetmix_bonds) as estimated_bond_wealth
     FROM wealth_management_client_metrics
     GROUP BY axa_party_id
 )
@@ -61,6 +63,7 @@ SELECT
     -- ===== Financial & Relationship Features =====
     ret.aum_sum AS total_aum_with_us,
     ret.aum_band,
+    -- **FIXED HERE: These columns now correctly reference the fixed CTE**
     cps.estimated_total_wealth,
     cps.estimated_stock_wealth,
     cps.estimated_bond_wealth,
