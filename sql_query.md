@@ -78,7 +78,7 @@ SELECT
     ret.life AS has_life_insurance,
     ret.network AS has_network_product,
     ret.eb AS has_employee_benefit,
-    ret.others AS has_other_product,
+    --ret.others AS has_other_product,
 
     -- ===== Behavioral & Engagement Features (from CTEs) =====
     COALESCE(act.total_activities_all_time, 0) AS total_activities_all_time,
@@ -114,27 +114,3 @@ LEFT JOIN ClientOpportunityMetrics AS opp
 
 WHERE
     ret.axa_party_id IS NOT NULL; -- Ensure we only model for clients with a valid ID
-
-
-
-
-
-This query builds a complete 360-degree profile for each client.
-
-It starts by gathering core demographics like the client's age, state, and segment.
-
-It then captures their financial value, including total assets held with the firm (AUM)...
-
-...and their estimated total external wealth (stocks, bonds).
-
-The client's tenure and total number of active policies are included to show loyalty.
-
-Crucially, it flags exactly which product categories the client already owns.
-
-It measures client engagement by counting their past activities and sales opportunities.
-
-This includes tracking total calls and positive interaction outcomes.
-
-Finally, it adds key details about the client's servicing agent.
-
-This includes the agent's experience, rank, and any elite memberships.
