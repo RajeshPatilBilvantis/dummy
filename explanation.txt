@@ -1,0 +1,27 @@
+Mini-Table 1: NextProductTarget (The Most Important One)
+  Purpose: To find the exact product we want to predict for each client.
+  How it Works (in two steps):
+  Rank the Policies: First, it looks at all the policies a client has in the client_metrics table. It sorts them by the date they were purchased (register_date) and gives them a rank: 1 for the first policy, 2 for the second, and so on.
+  Isolate the Second Policy: It then filters this list, keeping only the policy with policy_rank = 2. This policy is, by definition, the "immediate next product" a client bought. The name of this product is stored in our new target column, next_product_purchased. If a client only has one policy, they won't have a rank 2, so their target will be blank (which is perfect).
+
+Mini-Table 2: AgentLatestSnapshot
+  Purpose: To get the most up-to-date information for every agent.
+  How it Works: The rpt_agents table stores a performance snapshot for every agent, every month. We only care about the most recent one. This CTE groups the records by agent and ranks them by date, so the newest record for every agent always gets a rank of 1. We use this rank later to filter for only the latest data.
+
+Mini-Table 3: ClientActivityMetrics
+  Purpose: To summarize a client's entire interaction history into a few key numbers.
+  How it Works: It looks at the activities table (which has a row for every call or email) and groups them by client. For each client, it calculates things like total_activities_last_12m and the number of positive_outcomes (like a connected call).
+
+Mini-Table 4: ClientOpportunityMetrics
+  Purpose: To summarize a client's sales history.
+  How it Works: Similar to the one above, it groups the opportunities table by client and calculates useful metrics like the total number of won_opportunities.
+
+Mini-Table 5: ClientPolicySummary
+  Purpose: To get a single, clean value for client details like age and estimated wealth.
+  How it Works: A client might have multiple rows in the client_metrics table. This CTE groups them all by client and calculates their average age (avg_client_age) and finds their maximum estimated total wealth (estimated_total_wealth) to get a single, reliable number for each.
+
+
+Then, we use LEFT JOIN specifically because we want to keep every client from our foundation table, even if they don't have, for example, any recent activities.
+We connect ClientPolicySummary, ClientActivityMetrics, and ClientOpportunityMetrics using the client's unique ID (axa_party_id).
+We connect AgentLatestSnapshot using the agent's ID and that special rank rn = 1 to ensure we only get their latest info.
+Finally, we connect our special NextProductTarget table to add our prediction column.
