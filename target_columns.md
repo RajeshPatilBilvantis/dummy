@@ -8,13 +8,13 @@ ClientProductPortfolio AS (
         axa_party_id,
         -- We create a count for each product category that can appear in our target variable.
         -- These names now directly correspond to the values in 'wti_lob_txt'.
-        COUNT(CASE WHEN wti_lob_txt = 'Life Insurance' THEN policy_no END) AS count_life_insurance,
-        COUNT(CASE WHEN wti_lob_txt = 'Annuities' THEN policy_no END) AS count_annuities,
-        COUNT(CASE WHEN wti_lob_txt = 'Investment Products' THEN policy_no END) AS count_investment_products,
-        COUNT(CASE WHEN wti_lob_txt = 'Equitable Network' THEN policy_no END) AS count_equitable_network,
-        COUNT(CASE WHEN wti_lob_txt = 'Disability Income' THEN policy_no END) AS count_disability_income,
-        COUNT(CASE WHEN wti_lob_txt = 'Major Medical Insurance' THEN policy_no END) AS count_major_medical_insurance,
-        COUNT(CASE WHEN wti_lob_txt = 'Specialty Insurance' THEN policy_no END) AS count_specialty_insurance
+        COUNT(DISTINCT CASE WHEN wti_lob_txt = 'Life Insurance' THEN policy_no END) AS count_life_insurance,
+        COUNT(DISTINCT CASE WHEN wti_lob_txt = 'Annuities' THEN policy_no END) AS count_annuities,
+        COUNT(DISTINCT CASE WHEN wti_lob_txt = 'Investment Products' THEN policy_no END) AS count_investment_products,
+        COUNT(DISTINCT CASE WHEN wti_lob_txt = 'Equitable Network' THEN policy_no END) AS count_equitable_network,
+        COUNT(DISTINCT CASE WHEN wti_lob_txt = 'Disability Income' THEN policy_no END) AS count_disability_income,
+        COUNT(DISTINCT CASE WHEN wti_lob_txt = 'Major Medical Insurance' THEN policy_no END) AS count_major_medical_insurance,
+        COUNT(DISTINCT CASE WHEN wti_lob_txt = 'Specialty Insurance' THEN policy_no END) AS count_specialty_insurance
         -- Add more CASE WHEN statements here if there are other product categories in 'wti_lob_txt'.
     FROM
         wealth_management_client_metrics
