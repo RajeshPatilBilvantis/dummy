@@ -104,3 +104,71 @@ LEFT JOIN NextProductTarget AS tgt ON ret.axa_party_id = tgt.axa_party_id
 LEFT JOIN ClientProductPortfolio AS prod ON ret.axa_party_id = prod.axa_party_id
 WHERE
     ret.axa_party_id IS NOT NULL;
+
+
+
+
+
+
+
+    =============================================================
+-- CTE to identify the first product purchased (deduplicated)
+InitialProduct AS (
+    WITH RankedPolicies AS (
+        SELECT 
+            axa_party_id, 
+            wti_lob_txt AS product_category,
+            register_date,
+            policy_no,
+            ROW_NUMBER() OVER(
+                PARTITION BY axa_party_id 
+                ORDER BY register_date ASC, policy_no ASC
+            ) as policy_rank
+        FROM (
+            -- Deduplicate first, then rank
+            SELECT DISTINCT 
+                axa_party_id, 
+                wti_lob_txt, 
+                register_date, 
+                policy_no
+            FROM wealth_management_client_metrics
+            WHERE axa_party_id IS NOT NULL 
+            AND register_date IS NOT NULL 
+            AND wti_lob_txt IS NOT NULL
+        ) deduplicated_policies
+    )
+    SELECT axa_party_id, product_category AS initial_product_purchased
+    FROM RankedPolicies
+    WHERE policy_rank = 1
+),
+
+-- CTE to identify the second product purchased (deduplicated)
+NextProductTarget AS (
+    WITH RankedPolicies AS (
+        SELECT 
+            axa_party_id, 
+            wti_lob_txt AS product_category,
+            register_date,
+            policy_no,
+            ROW_NUMBER() OVER(
+                PARTITION BY axa_party_id 
+                ORDER BY register_date ASC, policy_no ASC
+            ) as policy_rank
+        FROM (
+            -- Deduplicate first, then rank
+            SELECT DISTINCT 
+                axa_party_id, 
+                wti_lob_txt, 
+                register_date, 
+                policy_no
+            FROM wealth_management_client_metrics
+            WHERE axa_party_id IS NOT NULL 
+            AND register_date IS NOT NULL 
+            AND wti_lob_txt IS NOT NULL
+        ) deduplicated_policies
+    )
+    SELECT axa_party_id, product_category AS next_product_purchased
+    FROM RankedPolicies
+    WHERE policy_rank = 2
+),
+
