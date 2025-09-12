@@ -1,195 +1,20 @@
-I'll analyze each plot to provide actionable insights for your cross-selling ML model:
+DistinctPolicies --- To solve the first big duplication problem (31 rows of each axa_party_id with different client_tenure and aum_sum), we need a clean, master list of every unique policy a client has. So, from wealth_management_client_metrics table, we took the rows with DISTINCT axa_party_id (essentially, unique client id).
 
-1. Target Distribution
-Key Insights:
+ClientProductPortfolio --- To count how many policies of each specific type a client owns, we took the clean DistinctPolicies and grouped all teh policies by client and for each client, we used COUNT(CASE WHEN ...) as a counter.
 
-Annuities (~40,000 clients) is the dominant next product purchased
+InitialProduct --- To find the very first product each client ever bought, we took DistinctPolicies and used ROW_NUMBER() to rank teh policies for a particular client and ordered by the register_date in ASC order. We select the 1st one as teh initial product.
 
-Life Insurance and Investment Products are also major cross-sell opportunities (~30,000 and ~15,000 respectively)
+NextProductTarget --- To find the second product each client ever bought, which will be the answer our model tries to predict (target), we take DistinctPolicies and do that same as getting the initial product but, take the 2nd one.
 
-Specialty Insurance and Major Medical Insurance show extremely low counts (~500-1,000 clients)
+AgentLatestSnapshot --- To get only the most recent, up-to-date information for every agent, we use the wealth_management_rpt_agents table.  It groups all the monthly records using ROW_NUMBER() for an agent and orders them from newest to oldest (ORDER BY yearmo DESC) - newest record gets no.1 .
 
-ML Implications:
+ClientActivityMetrics & ClientPolicySummary --- To create simple summaries for each client, used wealth_management_activities and wealth_management_client_metrics. Used GROUP BY to collapse all rows for a single client into one summary row, calculating their total activities in the last year, their average age, and their estimated total wealth.
 
-Class imbalance problem: Consider combining rare categories or using sampling techniques
+LatestRetentionSnapshot --- To solve the second duplication problem, we take only the most recent summary record for each client from the wealth_management_pcpg_retention table. As retention table is also a monthly snapshot, so it ranks all the rows for each client by the business_month (newest first) and gives the most recent record the number 1. 
 
-Focus model optimization on the top 3 categories for maximum business impact
-
-May need separate models for rare categories or exclude them from multi-class prediction
-
-2. Client Age Band Distribution
-Key Insights:
-
-Bimodal distribution: Peak at 35-52 years (~28,000 clients) and 65-79 years (~25,000 clients)
-
-Represents two distinct life stages: working professionals and pre-retirees
-
-Fewer clients in middle age (53-64) and very elderly (80+) segments
-
-Cross-Selling Strategy:
-
-Different product strategies needed for each age cohort
-
-Age will be a highly predictive feature in your ML model
-
-3. Client Segment Distribution
-Key Insights:
-
-Middle to upper-middle class dominance: 400-999k (~18,000) and 1-2.99m (~15,000) segments
-
-Significant lower-income segment (<200k ~12,000 clients)
-
-Ultra-high-net-worth clients (5m+) represent smallest segment (~2,000 clients)
-
-Business Opportunity:
-
-Largest revenue potential in the 400k-3m segment
-
-Specialized strategies needed for <200k (affordability-focused) and 5m+ (premium services)
-
-4. AUM Band Distribution
-Key Insights:
-
-Heavy concentration in lower AUM bands: <$25K (~65,000 clients) dominates
-
-Progressive decline in client counts as AUM increases
-
-Only ~5,000 clients in the >$500K category
-
-Critical Finding:
-
-Potential data quality issue: Most clients showing very low AUM despite being in higher income segments
-
-Verify if AUM represents only company assets vs. total client wealth
-
-5. Client Tenure Distribution
-Key Insights:
-
-Right-skewed distribution with peak at 5-8 years tenure
-
-Growing customer base: Many recent acquisitions (0-15 years)
-
-Loyal client base: Long tail extending to 80+ years showing excellent retention
-
-Cross-Selling Timing:
-
-Prime cross-selling window appears to be 5-15 years (established relationship, not yet saturated)
-
-6. AUM vs Next Product Purchased
-Key Insights:
-
-Wealth-based product preferences clearly visible:
-
-Annuities: Highest median AUM (~$400K), appeals to wealthy clients
-
-Investment Products: Second highest AUM, premium client focus
-
-Life Insurance: Wide AUM range, universal appeal
-
-Disability Income: Lower AUM focus, protection-oriented
-
-ML Feature Engineering:
-
-AUM will be a strong predictor for product recommendation
-
-Consider AUM percentiles rather than absolute values for better model generalization
-
-7. Client Age vs Next Product Purchased
-Key Insights:
-
-Clear age-based product lifecycle:
-
-Younger clients (40-60): Life Insurance, Disability Income (protection focus)
-
-Middle-aged (55-70): Annuities, Investment Products (wealth accumulation)
-
-Older clients (65+): Equitable Network (wealth preservation)
-
-Strategy Implication:
-
-Age-based segmentation will be crucial for model accuracy
-
-Product recommendations should follow natural life-stage progression
-
-9. Product Ownership Indicators
-Key Insights:
-
-Annuities lead in current ownership (~50,000 policies)
-
-Life Insurance and Investment Products show strong existing penetration
-
-Major Medical and Specialty Insurance have minimal market penetration
-
-Cross-Selling Opportunity:
-
-High ownership categories suggest successful products that could be expanded
-
-Low-penetration categories (Medical, Specialty) represent untapped markets
-
-10. Agent Rank vs Next Product Purchased
-Key Insights:
-
-Branch Managers drive the most cross-selling activity across all products
-
-Regular Agents show balanced cross-selling across major products
-
-District Managers focus more on high-value products (Annuities, Investment Products)
-
-Agent Strategy:
-
-Agent rank will be a valuable feature - different ranks have different cross-selling patterns
-
-Training and incentives should be tailored by agent level
-
-11. Client Segment vs Next Product Purchased
-Key Insights:
-
-Wealth-aligned product preferences:
-
-High-net-worth (3-5m+): Primarily Annuities and Investment Products
-
-Middle market (400k-3m): Balanced across all major products
-
-Lower segments (<400k): Focus on Life Insurance and Disability Income
-
-Targeting Strategy:
-
-Clear wealth-based product alignment enables precise targeting
-
-Each segment has distinct cross-selling opportunities
-
-12. AUM Band vs Next Product Purchased
-Key Insights:
-
->$500K AUM clients: Strong preference for Investment Products and Annuities
-
-<$100K AUM clients: Predominantly choose Life Insurance
-
-Middle AUM bands: More balanced product mix
-
-Model Training:
-
-AUM bands show strong predictive power for product preference
-
-Consider creating AUM-specific models or features
-
-13. Client Tenure vs Next Product Purchased
-Key Insights:
-
-Newer clients (0-15 years): Higher likelihood of Life Insurance cross-sell
-
-Established clients (15-30 years): Favor Investment Products and Equitable Network
-
-Long-term clients (30+ years): Gravitate toward premium products
-
-Strategic ML Model Recommendations
-High-Impact Features:
-AUM/Client Segment (strongest wealth indicator)
-
-Client Age (clear lifecycle patterns)
-
-Current Product Portfolio (cross-selling patterns)
-
-Agent Rank (sales capability indicator)
-
-Client Tenure (relationship maturity)
+FROM LatestRetentionSnapshot AS ret, we start our assembly using the clean, one-row-per-client list. every other cte will be attached to this.
+Then, for each client in our list, we perform a lookup to get the prepared components.
+LEFT JOIN ClientPolicySummary ...: We look up and attach the client's age and wealth.
+LEFT JOIN AgentLatestSnapshot ...: We look up the agent's info. The AND agent.rn = 1 is where we tell the assembly line to only use the component that was ranked #1 (the newest one), etc.
+WHERE Clause --- ret.axa_party_id IS NOT NULL: A simple check to make sure the client ID is valid.
+AND ret.rn = 1 --- It tells the query to only keep the final assembled rows where the record from the retention table was the most recent one (ranked #1). This is what guarantees only one row per client in final output data.
