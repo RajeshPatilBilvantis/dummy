@@ -1,238 +1,111 @@
--- FINAL ROBUST VERSION - DEDUPLICATION FIRST
--- This query prevents the "fan-out" effect by creating a clean list of distinct policies before any ranking or aggregation.
+-- THE ULTIMATE "TIME MACHINE" QUERY - POINT-IN-TIME FEATURES AND TARGET
+-- This query builds a dataset that is logically sound for prediction by using features that were known
+-- at the time of the client's FIRST purchase to predict their SECOND purchase.
 
 WITH
--- Step 1: Create a clean, deduplicated list of policies for each client. THIS IS THE KEY FIX.
-DistinctPolicies AS (
-    SELECT DISTINCT
+-- Step 1: Rank all policies for each client chronologically. This is our single source of truth.
+-- We must include all raw data points needed for our calculations here.
+RankedPolicies AS (
+    SELECT
         axa_party_id,
         policy_no,
-        wti_lob_txt,
-        register_date
+        wti_lob_txt AS product_category,
+        register_date,
+        acct_val_amt AS policy_aum, -- AUM of each individual policy
+        isrd_brth_date AS client_birth_date,
+        ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY register_date ASC, policy_no ASC) as policy_rank
     FROM
         wealth_management_client_metrics
     WHERE
         axa_party_id IS NOT NULL AND policy_no IS NOT NULL AND register_date IS NOT NULL
 ),
 
--- Step 2: Create the product portfolio from the CLEAN policy list.
-ClientProductPortfolio AS (
+-- Step 2: Create the complete feature set based ONLY on the state of the first policy.
+FeaturesAtFirstPurchase AS (
     SELECT
         axa_party_id,
-        -- Now we can use a simple COUNT, as duplicates are already removed.
-        COUNT(CASE WHEN wti_lob_txt = 'Life Insurance' THEN 1 END) AS count_life_insurance,
-        COUNT(CASE WHEN wti_lob_txt = 'Annuities' THEN 1 END) AS count_annuities,
-        COUNT(CASE WHEN wti_lob_txt = 'Investment Products' THEN 1 END) AS count_investment_products,
-        COUNT(CASE WHEN wti_lob_txt = 'Equitable Network' THEN 1 END) AS count_equitable_network,
-        COUNT(CASE WHEN wti_lob_txt = 'Disability Income' THEN 1 END) AS count_disability_income,
-        COUNT(CASE WHEN wti_lob_txt = 'Major Medical Insurance' THEN 1 END) AS count_major_medical_insurance,
-        COUNT(CASE WHEN wti_lob_txt = 'Specialty Insurance' THEN 1 END) AS count_specialty_insurance
+        -- Calculate age AT THE TIME of the first purchase.
+        DATEDIFF(register_date, client_birth_date) / 365.25 AS age_at_first_purchase,
+        -- The AUM feature is ONLY the AUM from that first policy.
+        policy_aum AS aum_at_first_purchase,
+        -- The portfolio features describe the first and ONLY product they have.
+        product_category AS initial_product_purchased,
+        CASE WHEN product_category = 'Life Insurance' THEN 1 ELSE 0 END AS has_life_insurance,
+        CASE WHEN product_category = 'Annuities' THEN 1 ELSE 0 END AS has_annuities,
+        CASE WHEN product_category = 'Investment Products' THEN 1 ELSE 0 END AS has_investment_products,
+        CASE WHEN product_category = 'Equitable Network' THEN 1 ELSE 0 END AS has_equitable_network,
+        CASE WHEN product_category = 'Disability Income' THEN 1 ELSE 0 END AS has_disability_income,
+        CASE WHEN product_category = 'Major Medical Insurance' THEN 1 ELSE 0 END AS has_major_medical_insurance,
+        CASE WHEN product_category = 'Specialty Insurance' THEN 1 ELSE 0 END AS has_specialty_insurance
     FROM
-        DistinctPolicies -- Using the clean source
-    GROUP BY
-        axa_party_id
+        RankedPolicies
+    WHERE
+        policy_rank = 1 -- This filter is the key to the entire "Time Machine".
 ),
 
--- Step 3: Identify the first product using the CLEAN policy list.
-InitialProduct AS (
-    WITH RankedPolicies AS (
-        SELECT axa_party_id, wti_lob_txt AS product_category,
-               ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY register_date ASC, policy_no ASC) as policy_rank
-        FROM DistinctPolicies -- Using the clean source
-    )
-    SELECT axa_party_id, product_category AS initial_product_purchased
-    FROM RankedPolicies
-    WHERE policy_rank = 1
-),
-
--- Step 4: Identify the second product (our target) using the CLEAN policy list.
+-- Step 3: Identify the target variable (the second policy), same as before.
 NextProductTarget AS (
-    WITH RankedPolicies AS (
-        SELECT axa_party_id, wti_lob_txt AS product_category,
-               ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY register_date ASC, policy_no ASC) as policy_rank
-        FROM DistinctPolicies -- Using the clean source
-    )
-    SELECT axa_party_id, product_category AS next_product_purchased
-    FROM RankedPolicies
-    WHERE policy_rank = 2
+    SELECT
+        axa_party_id,
+        product_category AS next_product_purchased
+    FROM
+        RankedPolicies
+    WHERE
+        policy_rank = 2
 ),
 
--- (The other feature CTEs that do not depend on client_metrics remain the same)
+-- (Agent and Activity CTEs remain the same, as we accept current/recent data as a proxy)
 AgentLatestSnapshot AS (
-    SELECT *, ROW_NUMBER() OVER(PARTITION BY agent_code ORDER BY yearmo DESC) as rn
-    FROM wealth_management_rpt_agents
+    SELECT *, ROW_NUMBER() OVER(PARTITION BY agent_code ORDER BY yearmo DESC) as rn FROM wealth_management_rpt_agents
 ),
 ClientActivityMetrics AS (
     SELECT account_axa_party_id_c AS client_id, COUNT(task_id) AS total_activities_last_12m
-    FROM wealth_management_activities
-    WHERE activity_date >= ADD_MONTHS(CURRENT_DATE, -12)
-    GROUP BY account_axa_party_id_c
-),
-ClientPolicySummary AS (
-    -- This CTE can still use the raw table, as GROUP BY handles duplication for these simple aggregations.
-    SELECT axa_party_id, AVG(DATEDIFF(CURRENT_DATE, isrd_brth_date) / 365.25) as avg_client_age, MAX(wc_total_assets) as estimated_total_wealth
-    FROM wealth_management_client_metrics
-    GROUP BY axa_party_id
+    FROM wealth_management_activities WHERE activity_date >= ADD_MONTHS(CURRENT_DATE, -12) GROUP BY account_axa_party_id_c
 )
 
--- Final SELECT: Assembling the clean and correct data
+-- Final SELECT: Assemble the true point-in-time dataset
 SELECT
+    -- ===== Primary Key =====
     ret.axa_party_id,
-    cps.avg_client_age, ret.client_age_band, ret.city AS client_city, ret.state AS client_state, ret.client_segment, ret.aum_sum AS total_aum_with_us, ret.aum_band, cps.estimated_total_wealth, ret.client_tenure, ret.active_policy_count, ret.client_type,
-    ip.initial_product_purchased,
-    COALESCE(prod.count_life_insurance, 0) AS count_life_insurance,
-    COALESCE(prod.count_annuities, 0) AS count_annuities,
-    COALESCE(prod.count_investment_products, 0) AS count_investment_products,
-    COALESCE(prod.count_equitable_network, 0) AS count_equitable_network,
-    COALESCE(prod.count_disability_income, 0) AS count_disability_income,
-    COALESCE(prod.count_major_medical_insurance, 0) AS count_major_medical_insurance,
-    COALESCE(prod.count_specialty_insurance, 0) AS count_specialty_insurance,
+
+    -- ===== POINT-IN-TIME Features from First Purchase =====
+    f.age_at_first_purchase,
+    f.aum_at_first_purchase,
+    f.initial_product_purchased,
+    f.has_life_insurance,
+    f.has_annuities,
+    f.has_investment_products,
+    f.has_equitable_network,
+    f.has_disability_income,
+    f.has_major_medical_insurance,
+    f.has_specialty_insurance,
+    
+    -- ===== Static / Proxy Features (Acceptable as current state) =====
+    -- Note: 'active_policy_count' from retention table is no longer a valid feature, as it should always be 1 at the time of prediction.
+    ret.city AS client_city,
+    ret.state AS client_state,
+    ret.client_segment, -- This is a snapshot, but can be a useful proxy
+    ret.client_type,
     COALESCE(act.total_activities_last_12m, 0) AS total_activities_last_12m,
     ret.agent_code,
     agent.rpt_lgth_of_svc AS agent_length_of_service,
     agent.rank_desc AS agent_rank,
     agent.ppg_membership AS agent_is_ppg_member,
+
+    -- ===== SINGLE TARGET VARIABLE (What we want to predict) =====
     tgt.next_product_purchased
 FROM
-    wealth_management_pcpg_retention AS ret
-LEFT JOIN ClientPolicySummary AS cps ON ret.axa_party_id = cps.axa_party_id
+    -- We can start with our features table as the base, as it represents the clients we want to model
+    FeaturesAtFirstPurchase AS f
+-- Join the target variable
+LEFT JOIN NextProductTarget AS tgt ON f.axa_party_id = tgt.axa_party_id
+-- Join the retention table to get some useful static client info
+LEFT JOIN (
+    SELECT *, ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY business_month DESC) as rn
+    FROM wealth_management_pcpg_retention
+) AS ret ON f.axa_party_id = ret.axa_party_id AND ret.rn = 1
+-- Join other summary/static info
 LEFT JOIN AgentLatestSnapshot AS agent ON ret.agent_code = agent.agent_code AND agent.rn = 1
-LEFT JOIN ClientActivityMetrics AS act ON ret.axa_party_id = act.client_id
-LEFT JOIN InitialProduct AS ip ON ret.axa_party_id = ip.axa_party_id
-LEFT JOIN NextProductTarget AS tgt ON ret.axa_party_id = tgt.axa_party_id
-LEFT JOIN ClientProductPortfolio AS prod ON ret.axa_party_id = prod.axa_party_id
+LEFT JOIN ClientActivityMetrics AS act ON f.axa_party_id = act.client_id
 WHERE
-    ret.axa_party_id IS NOT NULL;
-
-
-
-
-
-=========================================
-
-
-
-
-
-
-
--- FINAL ROBUST VERSION - DEDUPLICATING THE RETENTION TABLE
--- This query adds a step to select only the MOST RECENT snapshot from the retention table,
--- which solves the final duplication issue.
-
-WITH
--- Step 1: Create a clean, deduplicated list of policies for each client.
-DistinctPolicies AS (
-    SELECT DISTINCT
-        axa_party_id,
-        policy_no,
-        wti_lob_txt,
-        register_date
-    FROM
-        wealth_management_client_metrics
-    WHERE
-        axa_party_id IS NOT NULL AND policy_no IS NOT NULL AND register_date IS NOT NULL
-),
-
--- Step 2: Create the product portfolio from the CLEAN policy list.
-ClientProductPortfolio AS (
-    SELECT
-        axa_party_id,
-        COUNT(CASE WHEN wti_lob_txt = 'Life Insurance' THEN 1 END) AS count_life_insurance,
-        COUNT(CASE WHEN wti_lob_txt = 'Annuities' THEN 1 END) AS count_annuities,
-        COUNT(CASE WHEN wti_lob_txt = 'Investment Products' THEN 1 END) AS count_investment_products,
-        COUNT(CASE WHEN wti_lob_txt = 'Equitable Network' THEN 1 END) AS count_equitable_network,
-        COUNT(CASE WHEN wti_lob_txt = 'Disability Income' THEN 1 END) AS count_disability_income,
-        COUNT(CASE WHEN wti_lob_txt = 'Major Medical Insurance' THEN 1 END) AS count_major_medical_insurance,
-        COUNT(CASE WHEN wti_lob_txt = 'Specialty Insurance' THEN 1 END) AS count_specialty_insurance
-    FROM
-        DistinctPolicies
-    GROUP BY
-        axa_party_id
-),
-
--- Step 3: Identify the first product using the CLEAN policy list.
-InitialProduct AS (
-    WITH RankedPolicies AS (
-        SELECT axa_party_id, wti_lob_txt AS product_category,
-               ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY register_date ASC, policy_no ASC) as policy_rank
-        FROM DistinctPolicies
-    )
-    SELECT axa_party_id, product_category AS initial_product_purchased
-    FROM RankedPolicies
-    WHERE policy_rank = 1
-),
-
--- Step 4: Identify the second product (our target) using the CLEAN policy list.
-NextProductTarget AS (
-    WITH RankedPolicies AS (
-        SELECT axa_party_id, wti_lob_txt AS product_category,
-               ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY register_date ASC, policy_no ASC) as policy_rank
-        FROM DistinctPolicies
-    )
-    SELECT axa_party_id, product_category AS next_product_purchased
-    FROM RankedPolicies
-    WHERE policy_rank = 2
-),
-
--- Step 5: Get the most recent agent snapshot (as before).
-AgentLatestSnapshot AS (
-    SELECT *, ROW_NUMBER() OVER(PARTITION BY agent_code ORDER BY yearmo DESC) as rn
-    FROM wealth_management_rpt_agents
-),
-
--- Step 6: Get the most recent activity summary (as before).
-ClientActivityMetrics AS (
-    SELECT account_axa_party_id_c AS client_id, COUNT(task_id) AS total_activities_last_12m
-    FROM wealth_management_activities
-    WHERE activity_date >= ADD_MONTHS(CURRENT_DATE, -12)
-    GROUP BY account_axa_party_id_c
-),
-
--- Step 7: Get summary client metrics (as before).
-ClientPolicySummary AS (
-    SELECT axa_party_id, AVG(DATEDIFF(CURRENT_DATE, isrd_brth_date) / 365.25) as avg_client_age, MAX(wc_total_assets) as estimated_total_wealth
-    FROM wealth_management_client_metrics
-    GROUP BY axa_party_id
-),
-
--- **NEW STEP 8: Get only the single, most recent snapshot for each client from the retention table.**
-LatestRetentionSnapshot AS (
-    SELECT
-        *,
-        ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY business_month DESC) as rn
-    FROM
-        wealth_management_pcpg_retention
-)
-
--- Final SELECT: Assembling the clean and correct data
-SELECT
-    ret.axa_party_id,
-    cps.avg_client_age, ret.client_age_band, ret.city AS client_city, ret.state AS client_state, ret.client_segment, ret.aum_sum AS total_aum_with_us, ret.aum_band, cps.estimated_total_wealth, ret.client_tenure, ret.active_policy_count, ret.client_type,
-    ip.initial_product_purchased,
-    COALESCE(prod.count_life_insurance, 0) AS count_life_insurance,
-    COALESCE(prod.count_annuities, 0) AS count_annuities,
-    COALESCE(prod.count_investment_products, 0) AS count_investment_products,
-    COALESCE(prod.count_equitable_network, 0) AS count_equitable_network,
-    COALESCE(prod.count_disability_income, 0) AS count_disability_income,
-    COALESCE(prod.count_major_medical_insurance, 0) AS count_major_medical_insurance,
-    COALESCE(prod.count_specialty_insurance, 0) AS count_specialty_insurance,
-    COALESCE(act.total_activities_last_12m, 0) AS total_activities_last_12m,
-    ret.agent_code,
-    agent.rpt_lgth_of_svc AS agent_length_of_service,
-    agent.rank_desc AS agent_rank,
-    agent.ppg_membership AS agent_is_p_pg_member,
-    tgt.next_product_purchased
-FROM
-    -- **KEY CHANGE HERE: We now use our new, clean snapshot table as the base.**
-    LatestRetentionSnapshot AS ret
-LEFT JOIN ClientPolicySummary AS cps ON ret.axa_party_id = cps.axa_party_id
-LEFT JOIN AgentLatestSnapshot AS agent ON ret.agent_code = agent.agent_code AND agent.rn = 1
-LEFT JOIN ClientActivityMetrics AS act ON ret.axa_party_id = act.client_id
-LEFT JOIN InitialProduct AS ip ON ret.axa_party_id = ip.axa_party_id
-LEFT JOIN NextProductTarget AS tgt ON ret.axa_party_id = tgt.axa_party_id
-LEFT JOIN ClientProductPortfolio AS prod ON ret.axa_party_id = prod.axa_party_id
-WHERE
-    ret.axa_party_id IS NOT NULL
-    -- **KEY CHANGE HERE: We filter our base table to only include the most recent snapshot for each client.**
-    AND ret.rn = 1;
+    f.axa_party_id IS NOT NULL;
