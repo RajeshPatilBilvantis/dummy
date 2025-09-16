@@ -3,12 +3,87 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # --- 1. SETUP: Load the Data ---
-# We'll use the same function from the previous step to generate our database tables.
-# In a real scenario, you'd be loading your raw data tables here.
 
-# (The create_dummy_data() function from the previous response would be here)
-# For brevity, let's assume the tables are already loaded as DataFrames.
+def create_dummy_data():
+    """Creates all 10 tables as pandas DataFrames based on our dummy data."""
+    
+    # Adding a few more clients to make the logic clearer:
+    # - CUST7003 has three policies to test the 'first' and 'second' logic.
+    # - CUST8004 has only one policy and should be filtered out.
 
+    opportunities = pd.DataFrame({
+        'opportunity_id': ['OPP701', 'OPP702', 'OPP703', 'OPP704'],
+        'opportunity_owner_id': ['AGT101', 'AGT202', 'AGT101', 'AGT101'],
+        'opportunity_account_name': ['Alice Williams', 'Bob Jones', 'Bob Jones', 'Charles Davis'],
+        'stage_name': ['Closed Won', 'Closed Won', 'Closed Lost', 'Closed Won'],
+        'opp_contract_number_lm': ['POL9001', 'POL9002', np.nan, 'POL9003']
+    })
+
+    activities = pd.DataFrame({
+        'taskid': ['TSK1001', 'TSK1002', 'TSK1003', 'TSK1004'],
+        'what_id': ['OPP701', 'OPP701', 'OPP702', 'OPP703'],
+        'who_id': ['CUST5001', 'CUST5001', 'CUST6002', 'CUST6002'],
+        'activity_type_c': ['Outbound Call', 'Email', 'Inbound Call', 'Outbound Call']
+    })
+
+    policy = pd.DataFrame({
+        'pol_no': ['POL9001', 'POL9002', 'POL9003', 'POL9004', 'POL9005'],
+        'prod_code': ['LIFE100', 'ANNUITY25', 'LIFE100', 'INVEST40', 'DISABILITY30'],
+        'stat_code': ['ACTIVE', 'ACTIVE', 'ACTIVE', 'ACTIVE', 'ACTIVE'],
+        'face_amt': [500000, 250000, 300000, 100000, 0],
+        'register_date': ['2022-05-20', '2023-06-15', '2021-01-10', '2023-02-20', '2022-11-01']
+    })
+
+    agents = pd.DataFrame({
+        'agtuno': ['AGT101', 'AGT202', 'AGT101', 'AGT101', 'AGT101'],
+        'agt_first_name': ['John', 'Maria', 'John', 'John', 'John'],
+        'agt_last_name': ['Smith', 'Garcia', 'Smith', 'Smith', 'Smith'],
+        'pol_no': ['POL9001', 'POL9002', 'POL9003', 'POL9004', 'POL9005']
+    })
+
+    clients = pd.DataFrame({
+        'contract_id': ['POL9001', 'POL9002', 'POL9003', 'POL9004', 'POL9005'],
+        'axa_party_id': ['CUST5001', 'CUST6002', 'CUST7003', 'CUST7003', 'CUST8004'],
+        'contr_role_tp_nm': ['Policy Owner', 'Annuitant', 'Policy Owner', 'Policy Owner', 'Policy Owner']
+    })
+
+    transactions = pd.DataFrame({
+        'idb_transaction_id': ['TRN55501', 'TRN55502', 'TRN55503', 'TRN55504'],
+        'pol_no': ['POL9001', 'POL9002', 'POL9003', 'POL9004'],
+        'agent_no': ['AGT101', 'AGT202', 'AGT101', 'AGT101'],
+        'dr_cr_amount': [250.00, 1000.00, 200.00, 50.00]
+    })
+    
+    pcpg_retention = pd.DataFrame({
+        'axa_party_id': ['CUST5001', 'CUST6002', 'CUST7003', 'CUST8004'],
+        'client': ['Alice Williams', 'Bob Jones', 'Charles Davis', 'Diana Miller'],
+        'active_policy_count': [1, 1, 2, 1],
+        'aum_sum': [1250.00, 5000.00, 15000.00, 800.00]
+    })
+
+    rpt_agents = pd.DataFrame({
+        'agent_code': ['AGT101', 'AGT202'],
+        'full_name': ['John Smith', 'Maria Garcia'],
+        'division_name': ['Southern Division', 'Remote Advice'],
+        'ytd_pcs_rolling12': [15000.00, 22000.00]
+    })
+
+    remote_advise = pd.DataFrame({
+        'pol_no': ['POL9002'],
+        'agent_cd': ['AGT202'],
+        'prem_amt': [1000.00]
+    })
+
+    client_metrics = pd.DataFrame({
+        'policy_no': ['POL9001', 'POL9002', 'POL9003', 'POL9004', 'POL9005'],
+        'axa_party_id': ['CUST5001', 'CUST6002', 'CUST7003', 'CUST7003', 'CUST8004'],
+        'agent_id': ['AGT101', 'AGT202', 'AGT101', 'AGT101', 'AGT101'],
+        'client_seg': ['Mass Affluent', 'Emerging Affluent', 'Affluent', 'Affluent', 'Mass Market'],
+        'isrd_brth_date': ['1980-03-15', '1975-09-22', '1968-12-01', '1968-12-01', '1990-07-30'],
+        'we_total_assets': [150000.00, 85000.00, 750000.00, 750000.00, 45000.00]
+    })
+
+    return opportunities, activities, policy, agents, clients, transactions, pcpg_retention, rpt_agents, remote_advise, client_metrics
 (opportunities, activities, policy, agents, clients, transactions, 
  pcpg_retention, rpt_agents, remote_advise, client_metrics) = create_dummy_data()
 
