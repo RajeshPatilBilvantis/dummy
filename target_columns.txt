@@ -1,61 +1,22 @@
--- FINAL GOLD STANDARD VERSION - REFACTORED AND CORRECTED
--- This version ranks the policies only ONCE for efficiency and guaranteed consistency,
--- and it filters out policies that have no product name (NULL wti_lob_txt).
+-- FINAL GOLD STANDARD VERSION - REFACTORED WITH SELF-JOIN
+-- This version uses a robust self-join pattern on a single ranked list of policies,
+-- which guarantees consistency and correctly handles clients with only one policy.
 
 WITH
 -- Step 1: Create a clean, deduplicated list of policies with valid product names.
 DistinctPolicies AS (
     SELECT DISTINCT
-        axa_party_id,
-        policy_no,
-        wti_lob_txt,
-        register_date,
-        isrd_brth_date,
-        acct_val_amt,
-        face_amt,
-        cash_val_amt
-    FROM
-        wealth_management_client_metrics
-    WHERE
-        axa_party_id IS NOT NULL
-        AND policy_no IS NOT NULL
-        AND register_date IS NOT NULL
-        AND wti_lob_txt IS NOT NULL -- **FIX #2: Exclude policies with no name.**
+        axa_party_id, policy_no, wti_lob_txt, register_date, isrd_brth_date,
+        acct_val_amt, face_amt, cash_val_amt
+    FROM wealth_management_client_metrics
+    WHERE axa_party_id IS NOT NULL AND policy_no IS NOT NULL AND register_date IS NOT NULL AND wti_lob_txt IS NOT NULL
 ),
 
--- **KEY REFACTOR: Rank all policies for each client just ONCE.**
+-- Step 2: Rank all unique policies for each client just ONCE. This is our master timeline.
 RankedPolicies AS (
     SELECT *,
            ROW_NUMBER() OVER(PARTITION BY axa_party_id ORDER BY register_date ASC, policy_no ASC) as policy_rank
     FROM DistinctPolicies
-),
-
--- Step 2: Create features and dates based ONLY on the first policy.
-FirstPurchaseInfo AS (
-    SELECT
-        axa_party_id,
-        wti_lob_txt AS initial_product_purchased,
-        register_date AS first_purchase_date,
-        isrd_brth_date AS client_birth_date,
-        acct_val_amt AS first_policy_acct_val,
-        face_amt AS first_policy_face_amt,
-        cash_val_amt AS first_policy_cash_val
-    FROM
-        RankedPolicies -- Read from our single, consistent ranked list.
-    WHERE
-        policy_rank = 1
-),
-
--- Step 3: Identify the target (second policy) and its purchase date.
-NextProductTarget AS (
-    SELECT
-        axa_party_id,
-        wti_lob_txt AS next_product_purchased,
-        register_date AS second_purchase_date
-    FROM
-        RankedPolicies -- Read from our single, consistent ranked list.
-    WHERE
-        policy_rank = 2
 ),
 
 -- (Other CTEs for static/summary info remain useful)
@@ -74,13 +35,13 @@ LatestRetentionSnapshot AS (
     FROM wealth_management_pcpg_retention
 )
 
--- Final SELECT: Assembling the complete, point-in-time feature set
+-- Final SELECT: Assembling the complete feature set using the robust self-join pattern.
 SELECT
     -- ===== Primary Key =====
-    ret.axa_party_id,
+    p1.axa_party_id,
 
     -- ===== Static Client Features (Current state is acceptable) =====
-    DATEDIFF(CURRENT_DATE, fpi.client_birth_date) / 365.25 AS current_client_age,
+    DATEDIFF(CURRENT_DATE, p1.isrd_brth_date) / 365.25 AS current_client_age,
     ret.client_age_band,
     ret.city AS client_city,
     ret.state AS client_state,
@@ -90,16 +51,14 @@ SELECT
     ret.aum_sum AS total_aum_with_us_today,
     ret.aum_band,
 
-    -- ===== Point-in-Time Features =====
-    fpi.initial_product_purchased,
-    fpi.client_birth_date,
-    fpi.first_purchase_date,
-    tgt.second_purchase_date,
-    MONTHS_BETWEEN(tgt.second_purchase_date, fpi.first_purchase_date) AS months_to_second_purchase,
-    DATEDIFF(tgt.second_purchase_date, fpi.client_birth_date) / 365.25 AS age_at_second_purchase,
-    fpi.first_policy_acct_val,
-    fpi.first_policy_face_amt,
-    fpi.first_policy_cash_val,
+    -- ===== Point-in-Time Features (from the first policy, alias 'p1') =====
+    p1.wti_lob_txt AS initial_product_purchased,
+    p1.isrd_brth_date AS client_birth_date,
+    p1.register_date AS first_purchase_date,
+    p1.policy_no AS first_policy_no, -- Your debugging column
+    p1.acct_val_amt AS first_policy_acct_val,
+    p1.face_amt AS first_policy_face_amt,
+    p1.cash_val_amt AS first_policy_cash_val,
     
     -- ===== Engagement and Agent Features (Current state is acceptable) =====
     COALESCE(act.total_activities_last_12m, 0) AS total_activities_last_12m,
@@ -108,16 +67,28 @@ SELECT
     agent.rank_desc AS agent_rank,
     agent.ppg_membership AS agent_is_ppg_member,
 
-    -- ===== SINGLE TARGET VARIABLE =====
-    tgt.next_product_purchased
+    -- ===== Target Variable and Related Features (from the second policy, alias 'p2') =====
+    p2.wti_lob_txt AS next_product_purchased, -- This will now correctly be NULL if no 2nd policy exists.
+    p2.register_date AS second_purchase_date, -- Also NULL for single-policy clients.
+    p2.policy_no AS second_policy_no, -- Also NULL for single-policy clients.
+    MONTHS_BETWEEN(p2.register_date, p1.register_date) AS months_to_second_purchase,
+    DATEDIFF(p2.register_date, p1.isrd_brth_date) / 365.25 AS age_at_second_purchase
 
 FROM
-    LatestRetentionSnapshot AS ret
-LEFT JOIN AgentLatestSnapshot AS agent ON ret.agent_code = agent.agent_code AND agent.rn = 1
-LEFT JOIN ClientActivityMetrics AS act ON ret.axa_party_id = act.client_id
--- **KEY CHANGE: Use INNER JOIN to ensure we only have clients with at least one valid policy.**
-INNER JOIN FirstPurchaseInfo AS fpi ON ret.axa_party_id = fpi.axa_party_id
-LEFT JOIN NextProductTarget AS tgt ON ret.axa_party_id = tgt.axa_party_id
+    -- Our base is now the list of FIRST policies.
+    RankedPolicies AS p1
+-- We LEFT JOIN this list to the SECOND policies from the SAME ranked table.
+LEFT JOIN RankedPolicies AS p2
+    ON p1.axa_party_id = p2.axa_party_id AND p2.policy_rank = 2
+-- Now, we join all the other summary information to our base of first-policy holders.
+LEFT JOIN LatestRetentionSnapshot AS ret
+    ON p1.axa_party_id = ret.axa_party_id
+LEFT JOIN AgentLatestSnapshot AS agent
+    ON ret.agent_code = agent.agent_code AND agent.rn = 1
+LEFT JOIN ClientActivityMetrics AS act
+    ON p1.axa_party_id = act.client_id
 WHERE
-    ret.axa_party_id IS NOT NULL
-    AND ret.rn = 1;
+    -- This condition ensures our base only contains the clients' FIRST policies.
+    p1.policy_rank = 1
+    -- This condition ensures we only get the most recent snapshot from the retention table.
+    AND (ret.rn = 1 OR ret.rn IS NULL); -- Use IS NULL to keep clients who might not be in the retention table.
