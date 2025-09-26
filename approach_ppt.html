@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Class ML for Cross-Selling</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            overflow: hidden;
+        }
+        
+        .presentation {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        
+        .slide {
+            width: 90%;
+            max-width: 1200px;
+            height: 90vh;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            animation: slideIn 0.6s ease-out forwards;
+        }
+        
+        .slide.active {
+            display: flex;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .slide h1 {
+            font-size: 2.5em;
+            margin-bottom: 30px;
+            text-align: center;
+            background: linear-gradient(45deg, #ff6b6b, #feca57);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+        
+        .slide h2 {
+            font-size: 2em;
+            margin-bottom: 25px;
+            text-align: center;
+            color: #fff;
+        }
+        
+        @keyframes glow {
+            from { text-shadow: 0 0 20px rgba(255, 107, 107, 0.5); }
+            to { text-shadow: 0 0 30px rgba(254, 202, 87, 0.8); }
+        }
+        
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+        }
+        
+        .block-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+            align-items: center;
+            margin: 20px 0;
+        }
+        
+        .data-block {
+            background: linear-gradient(145deg, #48cae4, #0096c7);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 10px;
+            min-width: 200px;
+            text-align: center;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            animation: float 3s ease-in-out infinite;
+            transition: all 0.3s ease;
+        }
+        
+        .data-block:hover {
+            transform: scale(1.05);
+            box-shadow: 0 10px 30px rgba(0, 150, 199, 0.4);
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-10px); }
+        }
+        
+        .model-block {
+            background: linear-gradient(145deg, #ff6b6b, #ee5a52);
+            border-radius: 20px;
+            padding: 30px;
+            margin: 20px;
+            text-align: center;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            animation: pulse 2s infinite;
+            min-width: 250px;
+        }
+        
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(255, 107, 107, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
+        }
+        
+        .prediction-block {
+            background: linear-gradient(145deg, #54a0ff, #2e86de);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 10px;
+            text-align: center;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            animation: bounce 2s infinite;
+            min-width: 180px;
+        }
+        
+        @keyframes bounce {
+            0%, 20%, 53%, 80%, 100% { transform: translateY(0); }
+            40%, 43% { transform: translateY(-15px); }
+            70% { transform: translateY(-7px); }
+            90% { transform: translateY(-3px); }
+        }
+        
+        .arrow {
+            font-size: 3em;
+            color: #feca57;
+            animation: moveRight 2s infinite;
+            margin: 0 20px;
+        }
+        
+        @keyframes moveRight {
+            0%, 100% { transform: translateX(0); }
+            50% { transform: translateX(10px); }
+        }
+        
+        .navigation {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+        }
+        
+        .nav-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 16px;
+            backdrop-filter: blur(5px);
+        }
+        
+        .nav-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(255, 255, 255, 0.2);
+        }
+        
+        .slide-counter {
+            position: absolute;
+            top: 30px;
+            right: 30px;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 16px;
+        }
+        
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            width: 100%;
+            margin: 20px 0;
+        }
+        
+        .feature-item {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            animation: fadeInUp 0.6s ease-out forwards;
+            animation-delay: calc(var(--delay) * 0.2s);
+            opacity: 0;
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .learning-process {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            width: 100%;
+            align-items: center;
+        }
+        
+        .step {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 25px;
+            width: 80%;
+            text-align: center;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            animation: slideInFromLeft 0.8s ease-out forwards;
+            animation-delay: calc(var(--step-delay) * 0.3s);
+            opacity: 0;
+            transform: translateX(-50px);
+        }
+        
+        @keyframes slideInFromLeft {
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .probability-bars {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 100%;
+            max-width: 500px;
+        }
+        
+        .prob-bar {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .prob-label {
+            min-width: 120px;
+            text-align: left;
+        }
+        
+        .prob-fill {
+            flex: 1;
+            height: 30px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        
+        .prob-value {
+            height: 100%;
+            border-radius: 15px;
+            animation: fillBar 2s ease-out forwards;
+            animation-delay: 1s;
+        }
+        
+        @keyframes fillBar {
+            from { width: 0; }
+            to { width: var(--width); }
+        }
+        
+        .text-block {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 15px;
+            margin: 20px 0;
+            text-align: center;
+            font-size: 1.1em;
+            line-height: 1.6;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div class="presentation">
+        <div class="slide-counter">
+            <span id="slideNum">1</span> / <span id="totalSlides">7</span>
+        </div>
+        
+        <!-- Slide 1: Title -->
+        <div class="slide active">
+            <h1>Multi-Class ML for Insurance Cross-Selling</h1>
+            <div class="content">
+                <div class="text-block">
+                    <h2>🎯 Use Case</h2>
+                    <p>Recommend the best additional insurance policy to customers who currently hold only one policy</p>
+                </div>
+                <div class="block-container">
+                    <div class="data-block" style="--delay: 0">
+                        <h3>Current Customer</h3>
+                        <p>Has: Auto Insurance</p>
+                        <p>Wants: ???</p>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="model-block">
+                        <h3>ML Model</h3>
+                        <p>Multi-Class Classifier</p>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="prediction-block">
+                        <h3>Recommendation</h3>
+                        <p>Home Insurance</p>
+                        <p>85% confidence</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Slide 2: Problem Definition -->
+        <div class="slide">
+            <h2>Problem Definition</h2>
+            <div class="content">
+                <div class="text-block">
+                    <p>We have customers with different single policies and want to predict which additional policy they're most likely to buy</p>
+                </div>
+                <div class="feature-grid">
+                    <div class="feature-item" style="--delay: 0">
+                        <h3>🏠 Home Insurance</h3>
+                        <p>Property protection</p>
+                    </div>
+                    <div class="feature-item" style="--delay: 1">
+                        <h3>🚗 Auto Insurance</h3>
+                        <p>Vehicle coverage</p>
+                    </div>
+                    <div class="feature-item" style="--delay: 2">
+                        <h3>⚕️ Health Insurance</h3>
+                        <p>Medical coverage</p>
+                    </div>
+                    <div class="feature-item" style="--delay: 3">
+                        <h3>✈️ Travel Insurance</h3>
+                        <p>Trip protection</p>
+                    </div>
+                    <div class="feature-item" style="--delay: 4">
+                        <h3>💼 Life Insurance</h3>
+                        <p>Life coverage</p>
+                    </div>
+                    <div class="feature-item" style="--delay: 5">
+                        <h3>🏢 Business Insurance</h3>
+                        <p>Commercial coverage</p>
+                    </div>
+                </div>
+                <div class="text-block">
+                    <p><strong>Multi-Class Classification:</strong> One input → Multiple possible outputs (6 policy types)</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Slide 3: Data Collection -->
+        <div class="slide">
+            <h2>Step 1: Data Collection</h2>
+            <div class="content">
+                <div class="text-block">
+                    <p>Gather historical data about customers who bought additional policies</p>
+                </div>
+                <div class="block-container">
+                    <div class="data-block" style="--delay: 0">
+                        <h3>Customer Info</h3>
+                        <p>• Age: 35</p>
+                        <p>• Income: $75k</p>
+                        <p>• Location: Urban</p>
+                        <p>• Family: Married + 2 kids</p>
+                    </div>
+                    <div class="data-block" style="--delay: 1">
+                        <h3>Current Policy</h3>
+                        <p>• Type: Auto</p>
+                        <p>• Premium: $1,200/year</p>
+                        <p>• Claims: 0 in 3 years</p>
+                        <p>• Coverage: Full</p>
+                    </div>
+                    <div class="data-block" style="--delay: 2">
+                        <h3>Behavior</h3>
+                        <p>• Website visits</p>
+                        <p>• Email clicks</p>
+                        <p>• Customer service calls</p>
+                        <p>• App usage</p>
+                    </div>
+                    <div class="data-block" style="--delay: 3; background: linear-gradient(145deg, #2ed573, #1e90ff);">
+                        <h3>Target (Label)</h3>
+                        <p><strong>Bought: Home Insurance</strong></p>
+                        <p>3 months later</p>
+                    </div>
+                </div>
+                <div class="text-block">
+                    <p>We need thousands of such examples to train our model effectively</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Slide 4: Feature Engineering -->
+        <div class="slide">
+            <h2>Step 2: Feature Engineering</h2>
+            <div class="content">
+                <div class="text-block">
+                    <p>Transform raw data into meaningful features the model can understand</p>
+                </div>
+                <div class="learning-process">
+                    <div class="step" style="--step-delay: 0">
+                        <h3>Demographic Features</h3>
+                        <p>Age groups, income brackets, family size, location type</p>
+                    </div>
+                    <div class="step" style="--step-delay: 1">
+                        <h3>Policy Features</h3>
+                        <p>Current policy type, premium amount, coverage level, tenure</p>
+                    </div>
+                    <div class="step" style="--step-delay: 2">
+                        <h3>Behavioral Features</h3>
+                        <p>Website engagement, claim history, payment patterns</p>
+                    </div>
+                    <div class="step" style="--step-delay: 3">
+                        <h3>Derived Features</h3>
+                        <p>Premium-to-income ratio, life stage indicators, risk scores</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Slide 5: Model Training -->
+        <div class="slide">
+            <h2>Step 3: Model Training</h2>
+            <div class="content">
+                <div class="text-block">
+                    <p>The model learns patterns by analyzing thousands of examples</p>
+                </div>
+                <div class="block-container">
+                    <div class="data-block" style="background: linear-gradient(145deg, #ff9ff3, #f368e0);">
+                        <h3>Training Data</h3>
+                        <p>80% of historical data</p>
+                        <p>Features + Known outcomes</p>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="model-block">
+                        <h3>Learning Process</h3>
+                        <p>Finding patterns like:</p>
+                        <p>"Married + Kids + Auto → Home"</p>
+                        <p>"Young + Single + Auto → Travel"</p>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="data-block" style="background: linear-gradient(145deg, #7bed9f, #2ed573);">
+                        <h3>Validation</h3>
+                        <p>20% of data for testing</p>
+                        <p>Check accuracy</p>
+                    </div>
+                </div>
+                <div class="text-block">
+                    <p><strong>Key Learning:</strong> The model discovers which customer characteristics are most predictive of each policy type preference</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Slide 6: How Predictions Work -->
+        <div class="slide">
+            <h2>Step 4: Making Predictions</h2>
+            <div class="content">
+                <div class="text-block">
+                    <p>For a new customer, the model calculates probability scores for each policy type</p>
+                </div>
+                <div class="block-container" style="flex-direction: column;">
+                    <div class="data-block">
+                        <h3>New Customer Profile</h3>
+                        <p>Age: 28, Income: $65k, Single, Urban, Current: Auto Insurance</p>
+                    </div>
+                    <div class="arrow" style="transform: rotate(90deg);">↓</div>
+                    <div class="probability-bars">
+                        <div class="prob-bar">
+                            <div class="prob-label">Travel Insurance</div>
+                            <div class="prob-fill">
+                                <div class="prob-value" style="background: linear-gradient(90deg, #ff6b6b, #ee5a52); --width: 75%;"></div>
+                            </div>
+                            <span>75%</span>
+                        </div>
+                        <div class="prob-bar">
+                            <div class="prob-label">Health Insurance</div>
+                            <div class="prob-fill">
+                                <div class="prob-value" style="background: linear-gradient(90deg, #54a0ff, #2e86de); --width: 45%;"></div>
+                            </div>
+                            <span>45%</span>
+                        </div>
+                        <div class="prob-bar">
+                            <div class="prob-label">Home Insurance</div>
+                            <div class="prob-fill">
+                                <div class="prob-value" style="background: linear-gradient(90deg, #5f27cd, #341f97); --width: 25%;"></div>
+                            </div>
+                            <span>25%</span>
+                        </div>
+                        <div class="prob-bar">
+                            <div class="prob-label">Life Insurance</div>
+                            <div class="prob-fill">
+                                <div class="prob-value" style="background: linear-gradient(90deg, #feca57, #ff9ff3); --width: 20%;"></div>
+                            </div>
+                            <span>20%</span>
+                        </div>
+                    </div>
+                    <div class="prediction-block" style="background: linear-gradient(145deg, #ff6b6b, #ee5a52);">
+                        <h3>🏆 Recommendation</h3>
+                        <p><strong>Travel Insurance</strong></p>
+                        <p>Confidence: 75%</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Slide 7: Model Improvement -->
+        <div class="slide">
+            <h2>Step 5: Continuous Learning</h2>
+            <div class="content">
+                <div class="text-block">
+                    <p>The model improves over time by learning from new customer behavior</p>
+                </div>
+                <div class="learning-process">
+                    <div class="step" style="--step-delay: 0">
+                        <h3>🔄 Feedback Loop</h3>
+                        <p>Track which recommendations customers actually accept or reject</p>
+                    </div>
+                    <div class="step" style="--step-delay: 1">
+                        <h3>📊 Performance Monitoring</h3>
+                        <p>Measure accuracy, conversion rates, and business impact regularly</p>
+                    </div>
+                    <div class="step" style="--step-delay: 2">
+                        <h3>🔧 Model Updates</h3>
+                        <p>Retrain with new data to adapt to changing customer preferences</p>
+                    </div>
+                    <div class="step" style="--step-delay: 3">
+                        <h3>🎯 Business Impact</h3>
+                        <p>Higher conversion rates, better customer satisfaction, increased revenue</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="navigation">
+            <button class="nav-btn" onclick="previousSlide()">← Previous</button>
+            <button class="nav-btn" onclick="nextSlide()">Next →</button>
+        </div>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+        
+        document.getElementById('totalSlides').textContent = totalSlides;
+        
+        function showSlide(n) {
+            slides.forEach(slide => slide.classList.remove('active'));
+            currentSlide = (n + totalSlides) % totalSlides;
+            slides[currentSlide].classList.add('active');
+            document.getElementById('slideNum').textContent = currentSlide + 1;
+        }
+        
+        function nextSlide() {
+            showSlide(currentSlide + 1);
+        }
+        
+        function previousSlide() {
+            showSlide(currentSlide - 1);
+        }
+        
+        // Keyboard navigation
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                previousSlide();
+            }
+        });
+        
+        // Auto-advance animations on slide change
+        function resetAnimations() {
+            const activeSlide = slides[currentSlide];
+            const animatedElements = activeSlide.querySelectorAll('[style*="animation-delay"]');
+            animatedElements.forEach(el => {
+                el.style.animation = 'none';
+                setTimeout(() => {
+                    el.style.animation = '';
+                }, 10);
+            });
+        }
+        
+        // Reset animations when slide changes
+        const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                if (mutation.target.classList.contains('active')) {
+                    setTimeout(resetAnimations, 100);
+                }
+            });
+        });
+        
+        slides.forEach(slide => {
+            observer.observe(slide, { attributes: true, attributeFilter: ['class'] });
+        });
+    </script>
+</body>
+</html>
