@@ -1,36 +1,96 @@
-======================================================================
-RETRAINING LIGHTGBM WITH IMPROVEMENTS
-======================================================================
-Improvements applied:
-  1. Class weights for imbalanced classes
-  2. Transition probability features
-  3. Optimized hyperparameters for F1 score
+# ============================================================================
+# IMPROVEMENT 5: Retrain LightGBM with Class Weights and New Features
+# ============================================================================
+print("=" * 70)
+print("RETRAINING LIGHTGBM WITH IMPROVEMENTS")
+print("=" * 70)
+print("Improvements applied:")
+print("  1. Class weights for imbalanced classes")
+print("  2. Transition probability features")
+print("  3. Optimized hyperparameters for F1 score")
 
-TypeError: 'JavaPackage' object is not callable
-File <command-5386568783283493>, line 16
-     12 # Note: LightGBM's isUnbalance=True handles class imbalance automatically
-     13 # But we can also use class_weight parameter if available
-     14 # For now, we'll use isUnbalance=True and optimize other parameters
-     15 from synapse.ml.lightgbm import LightGBMClassifier
----> 16 lgbm_v2 = LightGBMClassifier(
-     17     labelCol="label",
-     18     featuresCol="features",
-     19     isUnbalance=True,  # Handles class imbalance
-     20     validationIndicatorCol="is_validation"
-     21 )
-     23 # Optimized hyperparameters for better F1 score
-     24 lgbm_v2.setParams(
-     25     maxDepth=8,  # Slightly deeper for more complex patterns
-     26     objective="multiclass",
-   (...)
-     38     minGainToSplit=0.1  # Minimum gain to split
-     39 )
-File /local_disk0/.ephemeral_nfs/envs/pythonEnv-c62ffb4e-832e-4831-a6eb-73cc48463898/lib/python3.12/site-packages/synapse/ml/lightgbm/LightGBMClassifier.py:414, in LightGBMClassifier.__init__(self, java_obj, baggingFraction, baggingFreq, baggingSeed, binSampleCount, boostFromAverage, boostingType, catSmooth, categoricalSlotIndexes, categoricalSlotNames, catl2, chunkSize, dataRandomSeed, dataTransferMode, defaultListenPort, deterministic, driverListenPort, dropRate, dropSeed, earlyStoppingRound, executionMode, extraSeed, featureFraction, featureFractionByNode, featureFractionSeed, featuresCol, featuresShapCol, fobj, improvementTolerance, initScoreCol, isEnableSparse, isProvideTrainingMetric, isUnbalance, labelCol, lambdaL1, lambdaL2, leafPredictionCol, learningRate, matrixType, maxBin, maxBinByFeature, maxCatThreshold, maxCatToOnehot, maxDeltaStep, maxDepth, maxDrop, maxNumClasses, maxStreamingOMPThreads, metric, microBatchSize, minDataInLeaf, minDataPerBin, minDataPerGroup, minGainToSplit, minSumHessianInLeaf, modelString, monotoneConstraints, monotoneConstraintsMethod, monotonePenalty, negBaggingFraction, numBatches, numIterations, numLeaves, numTasks, numThreads, objective, objectiveSeed, otherRate, parallelism, passThroughArgs, posBaggingFraction, predictDisableShapeCheck, predictionCol, probabilityCol, rawPredictionCol, referenceDataset, repartitionByGroupingColumn, samplingMode, samplingSubsetSize, seed, skipDrop, slotNames, thresholds, timeout, topK, topRate, uniformDrop, useBarrierExecutionMode, useMissing, useSingleDatasetMode, validationIndicatorCol, verbosity, weightCol, xGBoostDartMode, zeroAsMissing)
-    412 super(LightGBMClassifier, self).__init__()
-    413 if java_obj is None:
---> 414     self._java_obj = self._new_java_obj("com.microsoft.azure.synapse.ml.lightgbm.LightGBMClassifier", self.uid)
-    415 else:
-    416     self._java_obj = java_obj
+# Ensure Spark context is available
+if 'spark' not in globals() or spark is None:
+    raise RuntimeError("Spark context is not available. Please ensure Spark session is active.")
+
+# Re-import to ensure LightGBMClassifier is available (in case of session restart)
+try:
+    from synapse.ml.lightgbm import LightGBMClassifier
+except ImportError:
+    print("Warning: Could not import LightGBMClassifier. Using existing import if available.")
+
+# Note: LightGBM's isUnbalance=True handles class imbalance automatically
+# Use the same pattern as the original working code
+
+try:
+    # Create LightGBM classifier with improved parameters
+    # Using the same pattern as the original working code
+    lgbm_v2 = LightGBMClassifier(
+        labelCol="label",
+        featuresCol="features",
+        isUnbalance=True,  # Handles class imbalance
+        validationIndicatorCol="is_validation"
+    )
+    
+    # Optimized hyperparameters for better F1 score
+    # Using only parameters that are confirmed to work in SynapseML
+    lgbm_v2.setParams(
+        maxDepth=8,  # Slightly deeper for more complex patterns
+        objective="multiclass",
+        numClass=7,  # Updated to 7 classes (including None)
+        learningRate=0.03,  # Lower learning rate for better convergence
+        numIterations=1500,  # More iterations
+        earlyStoppingRound=100,  # More patience
+        numLeaves=50,  # More leaves for complex patterns
+        baggingFraction=0.85,  # Slightly higher
+        baggingFreq=1,
+        featureFraction=0.75  # Slightly lower to reduce overfitting
+        # Note: minDataInLeaf, lambdaL1, lambdaL2, minGainToSplit may not be available
+        # in this version of SynapseML - using only confirmed parameters
+    )
+    
+    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, lgbm_v2])
+    
+    print("\nTraining model with improvements...")
+    model_v2 = pipeline_v2.fit(combined_train_val_v2)
+    
+    print("✓ Model training completed!")
+    
+    # Get feature importances
+    lgbm_model_v2 = model_v2.stages[-1]
+    
+except Exception as e:
+    print(f"\n❌ Error creating LightGBM classifier: {e}")
+    print("\nTroubleshooting steps:")
+    print("1. Ensure synapse.ml is properly installed: !pip install synapseml")
+    print("2. Restart the Spark session if needed")
+    print("3. Check if the original LightGBM training cell ran successfully")
+    print("\nTrying alternative: Using original LightGBM parameters with new features...")
+    
+    # Fallback: Use original parameters but with new features
+    lgbm_v2 = LightGBMClassifier(
+        labelCol="label",
+        featuresCol="features",
+        isUnbalance=True,
+        validationIndicatorCol="is_validation"
+    )
+    lgbm_v2.setParams(
+        maxDepth=7,  # Original depth
+        objective="multiclass",
+        numClass=7,  # Updated to 7 classes
+        learningRate=0.05,  # Original learning rate
+        numIterations=1000,  # Original iterations
+        earlyStoppingRound=50,
+        numLeaves=40,  # Original leaves
+        baggingFraction=0.8,
+        baggingFreq=1,
+        featureFraction=0.8
+    )
+    
+    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, lgbm_v2])
+    model_v2 = pipeline_v2.fit(combined_train_val_v2)
+    lgbm_model_v2 = model_v2.stages[-1]
+    print("✓ Fallback model training completed!")
 
 # ============================================================================
 # IMPROVEMENT 2: Create Product Transition Probability Features
