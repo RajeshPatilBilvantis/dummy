@@ -1,53 +1,69 @@
-Requirement already satisfied: catboost in /local_disk0/.ephemeral_nfs/envs/pythonEnv-f230b650-4001-4bfa-a696-f3e57aa35a44/lib/python3.12/site-packages (1.2.8)
-Requirement already satisfied: graphviz in /local_disk0/.ephemeral_nfs/envs/pythonEnv-f230b650-4001-4bfa-a696-f3e57aa35a44/lib/python3.12/site-packages (from catboost) (0.21)
-Requirement already satisfied: matplotlib in /databricks/python3/lib/python3.12/site-packages (from catboost) (3.8.4)
-Requirement already satisfied: numpy<3.0,>=1.16.0 in /databricks/python3/lib/python3.12/site-packages (from catboost) (1.26.4)
-Requirement already satisfied: pandas>=0.24 in /databricks/python3/lib/python3.12/site-packages (from catboost) (1.5.3)
-Requirement already satisfied: scipy in /databricks/python3/lib/python3.12/site-packages (from catboost) (1.13.1)
-Requirement already satisfied: plotly in /databricks/python3/lib/python3.12/site-packages (from catboost) (5.22.0)
-Requirement already satisfied: six in /usr/lib/python3/dist-packages (from catboost) (1.16.0)
-Requirement already satisfied: python-dateutil>=2.8.1 in /databricks/python3/lib/python3.12/site-packages (from pandas>=0.24->catboost) (2.9.0.post0)
-Requirement already satisfied: pytz>=2020.1 in /databricks/python3/lib/python3.12/site-packages (from pandas>=0.24->catboost) (2024.1)
-Requirement already satisfied: contourpy>=1.0.1 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (1.2.0)
-Requirement already satisfied: cycler>=0.10 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (0.11.0)
-Requirement already satisfied: fonttools>=4.22.0 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (4.51.0)
-Requirement already satisfied: kiwisolver>=1.3.1 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (1.4.4)
-Requirement already satisfied: packaging>=20.0 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (24.1)
-Requirement already satisfied: pillow>=8 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (10.3.0)
-Requirement already satisfied: pyparsing>=2.3.1 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (3.0.9)
-Requirement already satisfied: tenacity>=6.2.0 in /databricks/python3/lib/python3.12/site-packages (from plotly->catboost) (8.2.2)
-Note: you may need to restart the kernel using %restart_python or dbutils.library.restartPython() to use updated packages.
-0:	learn: 0.4139299	test: 0.4103018	best: 0.4103018 (0)	total: 1.09s	remaining: 18m 7s
-100:	learn: 0.5629558	test: 0.5063995	best: 0.5063995 (100)	total: 1m 31s	remaining: 13m 34s
-200:	learn: 0.6060110	test: 0.5269687	best: 0.5273775 (199)	total: 3m	remaining: 11m 57s
-300:	learn: 0.6224281	test: 0.5284986	best: 0.5363284 (293)	total: 4m 17s	remaining: 9m 59s
-400:	learn: 0.6373284	test: 0.5482830	best: 0.5520794 (350)	total: 5m 42s	remaining: 8m 32s
-Stopped by overfitting detector  (100 iterations wait)
 
-bestTest = 0.5520793962
-bestIteration = 350
+0:	learn: 0.8404397	test: 0.8386066	best: 0.8386066 (0)	total: 805ms	remaining: 26m 49s
+100:	learn: 0.9964487	test: 0.9969038	best: 0.9969038 (100)	total: 1m 4s	remaining: 20m 7s
+200:	learn: 0.9998397	test: 0.9999993	best: 0.9999993 (200)	total: 2m 8s	remaining: 19m 9s
+300:	learn: 0.9999989	test: 0.9999999	best: 0.9999999 (239)	total: 3m 12s	remaining: 18m 5s
+400:	learn: 0.9999991	test: 1.0000000	best: 1.0000000 (303)	total: 4m 17s	remaining: 17m 5s
+Stopped by overfitting detector  (150 iterations wait)
 
-Shrink model to first 351 iterations.
+bestTest = 0.9999999566
+bestIteration = 303
+
+Shrink model to first 304 iterations.
 Regularized CatBoost model trained
 
 === Model Performance ===
-Macro F1: 0.3058
-Weighted F1: 0.5459
-Accuracy: 0.4884
-Macro Precision: 0.3360
-Macro Recall: 0.5557
+Macro F1: 0.9917
+Weighted F1: 1.0000
+Accuracy: 1.0000
+Macro Precision: 0.9841
+Macro Recall: 1.0000
 
 === Classification Report ===
                   precision    recall  f1-score   support
 
-      DISABILITY       0.03      0.93      0.06       162
-          HEALTH       0.00      0.42      0.00        19
-      INVESTMENT       0.65      0.55      0.59     39539
-  LIFE_INSURANCE       0.69      0.53      0.60     33278
-NETWORK_PRODUCTS       0.16      0.37      0.22      8003
-            None       0.07      0.68      0.12      1486
-      RETIREMENT       0.75      0.42      0.54     44291
+      DISABILITY       1.00      1.00      1.00       165
+          HEALTH       0.90      1.00      0.95        19
+      INVESTMENT       1.00      1.00      1.00     39542
+  LIFE_INSURANCE       1.00      1.00      1.00     33273
+NETWORK_PRODUCTS       1.00      1.00      1.00      8000
+      RETIREMENT       1.00      1.00      1.00     44295
 
-        accuracy                           0.49    126778
-       macro avg       0.34      0.56      0.31    126778
-    weighted avg       0.66      0.49      0.55    126778
+        accuracy                           1.00    125294
+       macro avg       0.98      1.00      0.99    125294
+    weighted avg       1.00      1.00      1.00    125294
+
+
+=== Top 20 Feature Importances ===
+                     feature  importance
+34        product_transition   58.518244
+33          is_same_category    5.354259
+1                   prod_lob    4.195394
+30   days_since_first_policy    3.193510
+9              division_name    2.836128
+7        sub_product_level_1    2.596977
+39            client_cluster    2.569635
+20          product_category    2.375805
+8        sub_product_level_2    1.880181
+2                  agt_class    1.618767
+36  p1_most_common_next_prod    1.559055
+5               client_seg_1    1.402821
+14    stock_allocation_ratio    1.270272
+0                wti_lob_txt    1.224150
+12                   channel    0.850656
+29          age_equity_ratio    0.789690
+3                    psn_age    0.776602
+25   log_wc_assetmix_annuity    0.707456
+22       age_at_first_policy    0.640824
+4                 client_seg    0.564659
+
+=== Per-Class Performance Analysis ===
+
+Confusion Matrix:
+                  DISABILITY  HEALTH  ...  NETWORK_PRODUCTS  RETIREMENT
+DISABILITY               165       0  ...                 0           0
+HEALTH                     0      19  ...                 0           0
+INVESTMENT                 0       0  ...                 0           0
+LIFE_INSURANCE             0       2  ...                 0           0
+NETWORK_PRODUCTS           0       0  ...              8000           0
+RETIREMENT                 0       0  ...                 0       44295
