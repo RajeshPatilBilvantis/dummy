@@ -1,3 +1,37 @@
+======================================================================
+RETRAINING LIGHTGBM WITH IMPROVEMENTS
+======================================================================
+Improvements applied:
+  1. Class weights for imbalanced classes
+  2. Transition probability features
+  3. Optimized hyperparameters for F1 score
+
+TypeError: 'JavaPackage' object is not callable
+File <command-5386568783283493>, line 16
+     12 # Note: LightGBM's isUnbalance=True handles class imbalance automatically
+     13 # But we can also use class_weight parameter if available
+     14 # For now, we'll use isUnbalance=True and optimize other parameters
+     15 from synapse.ml.lightgbm import LightGBMClassifier
+---> 16 lgbm_v2 = LightGBMClassifier(
+     17     labelCol="label",
+     18     featuresCol="features",
+     19     isUnbalance=True,  # Handles class imbalance
+     20     validationIndicatorCol="is_validation"
+     21 )
+     23 # Optimized hyperparameters for better F1 score
+     24 lgbm_v2.setParams(
+     25     maxDepth=8,  # Slightly deeper for more complex patterns
+     26     objective="multiclass",
+   (...)
+     38     minGainToSplit=0.1  # Minimum gain to split
+     39 )
+File /local_disk0/.ephemeral_nfs/envs/pythonEnv-c62ffb4e-832e-4831-a6eb-73cc48463898/lib/python3.12/site-packages/synapse/ml/lightgbm/LightGBMClassifier.py:414, in LightGBMClassifier.__init__(self, java_obj, baggingFraction, baggingFreq, baggingSeed, binSampleCount, boostFromAverage, boostingType, catSmooth, categoricalSlotIndexes, categoricalSlotNames, catl2, chunkSize, dataRandomSeed, dataTransferMode, defaultListenPort, deterministic, driverListenPort, dropRate, dropSeed, earlyStoppingRound, executionMode, extraSeed, featureFraction, featureFractionByNode, featureFractionSeed, featuresCol, featuresShapCol, fobj, improvementTolerance, initScoreCol, isEnableSparse, isProvideTrainingMetric, isUnbalance, labelCol, lambdaL1, lambdaL2, leafPredictionCol, learningRate, matrixType, maxBin, maxBinByFeature, maxCatThreshold, maxCatToOnehot, maxDeltaStep, maxDepth, maxDrop, maxNumClasses, maxStreamingOMPThreads, metric, microBatchSize, minDataInLeaf, minDataPerBin, minDataPerGroup, minGainToSplit, minSumHessianInLeaf, modelString, monotoneConstraints, monotoneConstraintsMethod, monotonePenalty, negBaggingFraction, numBatches, numIterations, numLeaves, numTasks, numThreads, objective, objectiveSeed, otherRate, parallelism, passThroughArgs, posBaggingFraction, predictDisableShapeCheck, predictionCol, probabilityCol, rawPredictionCol, referenceDataset, repartitionByGroupingColumn, samplingMode, samplingSubsetSize, seed, skipDrop, slotNames, thresholds, timeout, topK, topRate, uniformDrop, useBarrierExecutionMode, useMissing, useSingleDatasetMode, validationIndicatorCol, verbosity, weightCol, xGBoostDartMode, zeroAsMissing)
+    412 super(LightGBMClassifier, self).__init__()
+    413 if java_obj is None:
+--> 414     self._java_obj = self._new_java_obj("com.microsoft.azure.synapse.ml.lightgbm.LightGBMClassifier", self.uid)
+    415 else:
+    416     self._java_obj = java_obj
+
 # ============================================================================
 # IMPROVEMENT 2: Create Product Transition Probability Features
 # ============================================================================
