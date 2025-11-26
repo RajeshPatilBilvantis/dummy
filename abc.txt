@@ -1,0 +1,112 @@
+# ============================================================================
+# IMPROVEMENT 2: Create Product Transition Probability Features
+# ============================================================================
+print("=" * 70)
+print("CREATING PRODUCT TRANSITION PROBABILITY FEATURES")
+print("=" * 70)
+
+# Calculate transition probabilities from training data
+# This gives us P(second_product | first_product) for each combination
+transition_probs_df = train_data.groupBy("product_category", "second_product_category").count()
+
+# Calculate total counts per first product
+first_prod_totals = train_data.groupBy("product_category").count().withColumnRenamed("count", "total_first_prod")
+
+# Join and calculate probabilities
+transition_probs_with_totals = transition_probs_df.join(
+    first_prod_totals, 
+    on="product_category", 
+    how="left"
+)
+
+# Calculate probability: count / total for that first product
+transition_probs_final = transition_probs_with_totals.withColumn(
+    "transition_probability",
+    F.col("count") / F.col("total_first_prod")
+).select(
+    F.col("product_category").alias("first_prod"),
+    F.col("second_product_category").alias("second_prod"),
+    "transition_probability"
+)
+
+print("\nSample Transition Probabilities:")
+display(transition_probs_final.orderBy(F.desc("transition_probability")).limit(20))
+
+# Create lookup table for top 3 most likely next products for each first product
+window_spec = Window.partitionBy("first_prod").orderBy(F.col("transition_probability").desc())
+transition_probs_ranked = transition_probs_final.withColumn("rank", F.row_number().over(window_spec))
+
+# Get top 3 transitions for each first product
+top_transitions = transition_probs_ranked.filter(F.col("rank") <= 3).select(
+    "first_prod",
+    "second_prod",
+    "transition_probability",
+    "rank"
+)
+
+print("\nTop 3 Transition Probabilities per First Product:")
+display(top_transitions.orderBy("first_prod", "rank"))
+
+# Create features: probability of each second product given first product
+# We'll pivot this to create features like: prob_RETIREMENT_given_LIFE_INSURANCE
+# Since each (first_prod, second_prod) combination is unique, we can use max()
+# Note: pivot will create columns for each unique value in "second_prod"
+transition_features = transition_probs_final.groupBy("first_prod").pivot("second_prod").agg(
+    F.max("transition_probability")
+).fillna(0.0)
+
+# Rename columns to avoid conflicts
+# Get column names and rename (excluding first_prod)
+cols_to_rename = [col for col in transition_features.columns if col != "first_prod"]
+for col_name in cols_to_rename:
+    new_name = f"prob_{col_name}_given_first"
+    # Replace any special characters that might cause issues
+    new_name = new_name.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+    transition_features = transition_features.withColumnRenamed(col_name, new_name)
+
+print("\nTransition Probability Features (sample):")
+display(transition_features.limit(10))
+
+
+
+
+
+
+
+# ============================================================================
+# IMPROVEMENT 3: Add Transition Probability Features to Training Data
+# ============================================================================
+print("=" * 70)
+print("ADDING TRANSITION PROBABILITY FEATURES TO DATASETS")
+print("=" * 70)
+
+# Function to add transition probability features
+def add_transition_prob_features(df, transition_features_df):
+    df_with_probs = df.join(
+        transition_features_df,
+        df["product_category"] == transition_features_df["first_prod"],
+        how="left"
+    )
+    # Drop the join key column (first_prod) if it exists
+    if "first_prod" in df_with_probs.columns:
+        df_with_probs = df_with_probs.drop("first_prod")
+    # Fill missing probabilities with 0
+    prob_cols = [col for col in df_with_probs.columns if col.startswith("prob_")]
+    if prob_cols:
+        df_with_probs = df_with_probs.fillna(0.0, subset=prob_cols)
+    return df_with_probs
+
+# Add to training and validation sets
+train_df_final_v2 = add_transition_prob_features(train_df_final, transition_features)
+val_df_final_v2 = add_transition_prob_features(val_df_final, transition_features)
+
+print(f"\nOriginal train_df_final columns: {len(train_df_final.columns)}")
+print(f"Enhanced train_df_final_v2 columns: {len(train_df_final_v2.columns)}")
+print(f"Added {len(train_df_final_v2.columns) - len(train_df_final.columns)} transition probability features")
+
+# Update combined dataset
+train_df_final_v2 = train_df_final_v2.withColumn("is_validation", F.lit(False))
+val_df_final_v2 = val_df_final_v2.withColumn("is_validation", F.lit(True))
+combined_train_val_v2 = train_df_final_v2.unionByName(val_df_final_v2)
+
+print("\n✓ Transition probability features added successfully!")
