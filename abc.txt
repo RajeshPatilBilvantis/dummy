@@ -1,100 +1,83 @@
-# ============================================================================
-# IMPROVEMENT 5: Retrain with XGBoost or Optimized GBT (Alternative to LightGBM)
-# ============================================================================
-print("=" * 70)
-print("RETRAINING WITH XGBOOST/OPTIMIZED GBT (LightGBM Alternative)")
-print("=" * 70)
-print("Improvements applied:")
-print("  1. Class weights for imbalanced classes")
-print("  2. Transition probability features")
-print("  3. Optimized hyperparameters for F1 score")
+0:	learn: 0.5616797	test: 0.5324556	best: 0.5324556 (0)	total: 1.4s	remaining: 28m 3s
+100:	learn: 0.6517389	test: 0.5963689	best: 0.5963689 (100)	total: 2m 18s	remaining: 25m 10s
+200:	learn: 0.6715131	test: 0.6149701	best: 0.6149701 (200)	total: 4m 41s	remaining: 23m 17s
+300:	learn: 0.6816553	test: 0.6239657	best: 0.6239657 (300)	total: 6m 52s	remaining: 20m 31s
+400:	learn: 0.6887186	test: 0.6308073	best: 0.6308906 (397)	total: 8m 50s	remaining: 17m 36s
+500:	learn: 0.6941414	test: 0.6343082	best: 0.6343082 (500)	total: 10m 54s	remaining: 15m 13s
+600:	learn: 0.6985054	test: 0.6369899	best: 0.6370646 (599)	total: 12m 59s	remaining: 12m 57s
+700:	learn: 0.7025943	test: 0.6397160	best: 0.6397160 (700)	total: 15m 6s	remaining: 10m 45s
+800:	learn: 0.7053669	test: 0.6416947	best: 0.6417913 (799)	total: 17m 17s	remaining: 8m 36s
+900:	learn: 0.7076562	test: 0.6434286	best: 0.6434669 (899)	total: 19m 38s	remaining: 6m 31s
+1000:	learn: 0.7098804	test: 0.6449396	best: 0.6450010 (998)	total: 21m 57s	remaining: 4m 21s
+1100:	learn: 0.7119056	test: 0.6461647	best: 0.6461647 (1100)	total: 24m 11s	remaining: 2m 10s
+1199:	learn: 0.7139704	test: 0.6465229	best: 0.6466993 (1172)	total: 27m 12s	remaining: 0us
 
-# Ensure Spark context is available
-if 'spark' not in globals() or spark is None:
-    raise RuntimeError("Spark context is not available. Please ensure Spark session is active.")
+bestTest = 0.6466993476
+bestIteration = 1172
 
-# Try XGBoost first (better than LightGBM for many cases)
-use_xgboost = False
-try:
-    from synapse.ml.lightgbm import LightGBMClassifier
-    # Check if XGBoost is available via SynapseML
-    try:
-        from synapse.ml.xgboost import XGBoostClassifier
-        use_xgboost = True
-        print("\n✓ XGBoost available - using XGBoost (better performance expected)")
-    except ImportError:
-        print("\n⚠ XGBoost not available - using optimized GBT with class weights")
-        use_xgboost = False
-except:
-    print("\n⚠ Using optimized GBT with class weights")
+Shrink model to first 1173 iterations.
+Regularized CatBoost model trained
 
-if use_xgboost:
-    # ========== XGBOOST APPROACH ==========
-    print("\nTraining XGBoost model...")
-    
-    xgb = XGBoostClassifier(
-        labelCol="label",
-        featuresCol="features",
-        validationIndicatorCol="is_validation"
-    )
-    
-    # XGBoost optimized parameters
-    xgb.setParams(
-        maxDepth=8,
-        objective="multi:softprob",
-        numClass=7,
-        learningRate=0.03,
-        numRound=1500,
-        earlyStoppingRounds=100,
-        numWorkers=1,
-        treeMethod="hist",
-        growPolicy="depthwise",
-        maxLeaves=50,
-        subsample=0.85,
-        colSampleByTree=0.75,
-        colSampleByLevel=0.75,
-        minChildWeight=20,  # Similar to minDataInLeaf
-        regAlpha=0.1,  # L1 regularization
-        regLambda=0.1,  # L2 regularization
-        scalePosWeight=1.0  # For class imbalance
-    )
-    
-    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, xgb])
-    model_v2 = pipeline_v2.fit(combined_train_val_v2)
-    xgb_model_v2 = model_v2.stages[-1]
-    print("✓ XGBoost model training completed!")
-    
-else:
-    # ========== OPTIMIZED GBT WITH CLASS WEIGHTS ==========
-    print("\nTraining Optimized GBT model with class weights...")
-    
-    from pyspark.ml.classification import GBTClassifier, OneVsRest
-    from pyspark.ml.feature import IndexToString
-    
-    # Calculate class weights for GBT
-    # GBT doesn't have built-in class weights, so we'll use OneVsRest with balanced approach
-    # and optimize hyperparameters
-    
-    # Create optimized GBT
-    gbt_v2 = GBTClassifier(
-        labelCol="label",
-        featuresCol="features",
-        maxIter=200,  # More iterations
-        maxDepth=8,  # Deeper trees
-        stepSize=0.03,  # Lower learning rate
-        subsamplingRate=0.85,  # Row sampling
-        minInstancesPerNode=20,  # Prevent overfitting on minority classes
-        minInfoGain=0.1,  # Minimum gain to split
-        maxBins=256  # More bins for better precision
-    )
-    
-    # Use OneVsRest for multiclass (better than single GBT for imbalanced data)
-    ovr_v2 = OneVsRest(classifier=gbt_v2, labelCol="label", featuresCol="features")
-    
-    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, ovr_v2])
-    
-    print("Training model with improvements...")
-    model_v2 = pipeline_v2.fit(train_df_final_v2)  # Train only on training set
-    
-    print("✓ Optimized GBT model training completed!")
-    gbt_model_v2 = model_v2.stages[-1].models[0]  # Get first binary classifier for feature importance
+=== Model Performance ===
+Macro F1: 0.5437
+Weighted F1: 0.6892
+Accuracy: 0.6958
+Macro Precision: 0.5505
+Macro Recall: 0.5520
+
+=== Classification Report ===
+                  precision    recall  f1-score   support
+
+      INVESTMENT       0.67      0.84      0.74     39541
+  LIFE_INSURANCE       0.72      0.71      0.72     33274
+NETWORK_PRODUCTS       0.36      0.23      0.28      8002
+    OTHER_HEALTH       0.25      0.34      0.29       182
+      RETIREMENT       0.77      0.64      0.70     44295
+
+        accuracy                           0.70    125294
+       macro avg       0.55      0.55      0.54    125294
+    weighted avg       0.69      0.70      0.69    125294
+
+
+=== Top 20 Feature Importances ===
+                         feature  importance
+23               years_to_second   19.892244
+30       days_since_first_policy   11.531235
+36                 register_year    7.540845
+45  agent_most_common_cross_sell    6.493635
+3                        psn_age    4.906124
+9                  division_name    3.918237
+22           age_at_first_policy    3.526763
+40     agent_p1_cross_sell_count    3.348873
+41    branch_p1_cross_sell_count    2.895684
+7            sub_product_level_1    2.604867
+46              agent_avg_assets    2.496756
+8            sub_product_level_2    2.372893
+26                  log_face_amt    2.285413
+2                      agt_class    2.121492
+16      annuity_allocation_ratio    1.928249
+13                 agent_segment    1.904936
+39      p1_most_common_next_prod    1.559935
+10                 mkt_prod_hier    1.468859
+37                      age_band    1.396077
+1                       prod_lob    1.160595
+
+=== Per-Class Performance Analysis ===
+
+Confusion Matrix:
+                  INVESTMENT  LIFE_INSURANCE  ...  OTHER_HEALTH  RETIREMENT
+INVESTMENT             33076            2245  ...             0        3466
+LIFE_INSURANCE          4677           23768  ...           147        3597
+NETWORK_PRODUCTS        2563            1964  ...             4        1663
+OTHER_HEALTH              15              92  ...            62          12
+RETIREMENT              9355            5035  ...            40       28469
+
+[5 rows x 5 columns]
+
+=== Prediction Distribution ===
+                  True Count  Predicted Count  Difference  Difference %
+INVESTMENT             39541            49686       10145         25.66
+LIFE_INSURANCE         33274            33104        -170         -0.51
+NETWORK_PRODUCTS        8002             5044       -2958        -36.97
+OTHER_HEALTH             182              253          71         39.01
+RETIREMENT             44295            37207       -7088        -16.00
