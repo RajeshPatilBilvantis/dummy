@@ -1,188 +1,91 @@
-# ===== ENSEMBLE MODELS (OPTIONAL - UNCOMMENT TO USE) =====
-# Ensemble can improve performance by 5-10% over single model
-# Uncomment below to train ensemble of CatBoost + XGBoost + LightGBM
+0:	learn: 0.5890822	test: 0.5436404	best: 0.5436404 (0)	total: 1.01s	remaining: 33m 45s
+100:	learn: 0.6934915	test: 0.6243590	best: 0.6243590 (100)	total: 1m 21s	remaining: 25m 32s
+200:	learn: 0.7161553	test: 0.6420967	best: 0.6421369 (199)	total: 2m 44s	remaining: 24m 28s
+300:	learn: 0.7262047	test: 0.6490399	best: 0.6490884 (298)	total: 4m 4s	remaining: 23m
+400:	learn: 0.7325734	test: 0.6529383	best: 0.6529801 (398)	total: 5m 25s	remaining: 21m 39s
+500:	learn: 0.7369479	test: 0.6559086	best: 0.6559086 (500)	total: 6m 42s	remaining: 20m 4s
+600:	learn: 0.7404941	test: 0.6594923	best: 0.6594923 (600)	total: 7m 59s	remaining: 18m 36s
+700:	learn: 0.7435882	test: 0.6619023	best: 0.6619023 (700)	total: 9m 19s	remaining: 17m 16s
+800:	learn: 0.7460470	test: 0.6640801	best: 0.6640801 (800)	total: 10m 40s	remaining: 15m 58s
+900:	learn: 0.7482039	test: 0.6656242	best: 0.6656685 (896)	total: 11m 57s	remaining: 14m 35s
+1000:	learn: 0.7500720	test: 0.6674634	best: 0.6674634 (1000)	total: 13m 16s	remaining: 13m 14s
+1100:	learn: 0.7517213	test: 0.6686648	best: 0.6686752 (1098)	total: 14m 36s	remaining: 11m 55s
+1200:	learn: 0.7534690	test: 0.6695493	best: 0.6695724 (1194)	total: 15m 55s	remaining: 10m 35s
+1300:	learn: 0.7549754	test: 0.6700065	best: 0.6700688 (1278)	total: 17m 13s	remaining: 9m 15s
+1400:	learn: 0.7563688	test: 0.6707856	best: 0.6709343 (1387)	total: 18m 32s	remaining: 7m 55s
+1500:	learn: 0.7576612	test: 0.6714439	best: 0.6715028 (1496)	total: 19m 52s	remaining: 6m 36s
+1600:	learn: 0.7589125	test: 0.6721822	best: 0.6721822 (1600)	total: 21m 14s	remaining: 5m 17s
+1700:	learn: 0.7599913	test: 0.6726183	best: 0.6727505 (1683)	total: 22m 35s	remaining: 3m 58s
+1800:	learn: 0.7611902	test: 0.6733419	best: 0.6734595 (1795)	total: 23m 57s	remaining: 2m 38s
+1900:	learn: 0.7623633	test: 0.6739788	best: 0.6739959 (1899)	total: 25m 16s	remaining: 1m 18s
+1999:	learn: 0.7633667	test: 0.6743500	best: 0.6744213 (1988)	total: 26m 37s	remaining: 0us
 
-# Install additional libraries
-%pip install xgboost lightgbm
+bestTest = 0.6744213366
+bestIteration = 1988
 
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
-from sklearn.ensemble import VotingClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.metrics import f1_score
-import pandas as pd
+Shrink model to first 1989 iterations.
+Regularized CatBoost model trained
 
-# Prepare data for XGBoost and LightGBM (need label encoding for categoricals)
-le = LabelEncoder()
-y_train_encoded = le.fit_transform(train_df['second_product_category'])
-y_val_encoded = le.transform(val_df['second_product_category'])
+=== Model Performance ===
+Macro F1: 0.5201
+Weighted F1: 0.6949
+Accuracy: 0.7086
+Macro Precision: 0.6061
+Macro Recall: 0.5048
 
-# Get feature columns (exclude target)
-X_train = train_df[pool_columns].copy()
-X_val = val_df[pool_columns].copy()
+=== Classification Report ===
+                  precision    recall  f1-score   support
 
-# Encode categorical features for XGBoost/LightGBM
-cat_indices = [i for i, col in enumerate(pool_columns) if col in categorical_feature_cols]
-# Convert object columns to category dtype for XGBoost
-for col in X_train.select_dtypes(include='object').columns:
-    X_train[col] = X_train[col].astype('category')
-    X_val[col] = X_val[col].astype('category')
+      INVESTMENT       0.67      0.85      0.75     39543
+  LIFE_INSURANCE       0.72      0.74      0.73     33278
+NETWORK_PRODUCTS       0.49      0.13      0.21      8001
+    OTHER_HEALTH       0.38      0.14      0.20       179
+      RETIREMENT       0.76      0.67      0.71     44288
 
-# For CatBoost, we need column names (not indices) of categorical features
-cat_feature_names_ensemble = [col for col in categorical_feature_cols if col in pool_columns]
+        accuracy                           0.71    125289
+       macro avg       0.61      0.50      0.52    125289
+    weighted avg       0.70      0.71      0.69    125289
 
-# 1. XGBoost
-xgb_model = XGBClassifier(
-    n_estimators=1000,
-    max_depth=7,
-    learning_rate=0.05,
-    objective='multi:softprob',
-    eval_metric='mlogloss',
-    random_state=42,
-    early_stopping_rounds=100,
-    use_label_encoder=False, enable_categorical=True
-)
 
-# 2. LightGBM
-lgb_model = LGBMClassifier(
-    n_estimators=1000,
-    max_depth=7,
-    learning_rate=0.05,
-    objective='multiclass',
-    random_state=42,
-    verbose=-1,
-    early_stopping_rounds=100
-)
+=== Top 20 Feature Importances ===
+                          feature  importance
+23                years_to_second   18.073874
+30        days_since_first_policy   10.984556
+36                  register_year    7.725288
+45   agent_most_common_cross_sell    6.806942
+3                         psn_age    3.803803
+9                   division_name    3.640326
+48        product_age_interaction    3.605422
+8             sub_product_level_2    3.553014
+52      years_product_interaction    3.517985
+49  product_agent_seg_interaction    3.395349
+22            age_at_first_policy    3.307320
+40      agent_p1_cross_sell_count    3.298209
+41     branch_p1_cross_sell_count    2.562124
+7             sub_product_level_1    2.326406
+46               agent_avg_assets    2.070741
+26                   log_face_amt    2.067589
+47        product_aum_interaction    1.691683
+5                    client_seg_1    1.514330
+16       annuity_allocation_ratio    1.123015
+25        log_wc_assetmix_annuity    1.089340
 
-# --- FIX: Create a fresh CatBoost model for ensemble (don't reuse trained model) ---
-from catboost import CatBoostClassifier
-cat_model_ensemble = CatBoostClassifier(
-    iterations=1200,
-    depth=7,
-    learning_rate=0.05,
-    loss_function="MultiClass",
-    eval_metric="TotalF1",
-    random_seed=42,
-    task_type="CPU",
-    l2_leaf_reg=3.0,
-    subsample=0.85,
-    colsample_bylevel=0.85,
-    min_data_in_leaf=50,
-    early_stopping_rounds=100,
-    verbose=100,
-    bootstrap_type="Bernoulli",
-    class_weights=class_weights_dict,
-    grow_policy="SymmetricTree",
-    boosting_type="Plain",
-    use_best_model=False  # Set to False for ensemble (no eval_set from VotingClassifier)
-)
+=== Per-Class Performance Analysis ===
 
-# --- FIX: Wrap CatBoost to always pass cat_features and handle label encoding properly ---
-class CatBoostWithCatFeatures(BaseEstimator, ClassifierMixin):
-    def __init__(self, model, cat_features, original_classes=None):
-        self.model = model
-        self.cat_features = cat_features
-        self.original_classes = original_classes  # Store original class labels
-        
-    def fit(self, X, y, eval_set=None, **kwargs):
-        # Check if y contains integers (from VotingClassifier's LabelEncoder)
-        y_series = pd.Series(y)
-        
-        # If y contains integers (encoded labels from VotingClassifier), map them back to original string labels
-        if pd.api.types.is_integer_dtype(y_series) or (y_series.dtype == 'object' and y_series.str.isdigit().all() if len(y_series) > 0 else False):
-            # These are encoded labels from VotingClassifier
-            # Map encoded integers back to original string labels
-            if self.original_classes is not None:
-                # Create mapping: encoded_int -> original_string
-                # VotingClassifier's LabelEncoder encodes in sorted order, so we can map directly
-                y = y_series.map(lambda x: self.original_classes[int(x)] if 0 <= int(x) < len(self.original_classes) else str(x)).values
-            else:
-                # Fallback: use integers as-is (but this won't work with string-based class_weights)
-                # Better to raise an error
-                raise ValueError("Integer labels detected but original_classes not provided. Please provide original_classes when initializing the wrapper.")
-        else:
-            # Original string labels - use as-is
-            y = y_series.astype(str).values
-        
-        if eval_set is not None:
-            X_eval, y_eval = eval_set
-            y_eval_series = pd.Series(y_eval)
-            
-            # Handle eval_set labels the same way
-            if pd.api.types.is_integer_dtype(y_eval_series) or (y_eval_series.dtype == 'object' and y_eval_series.str.isdigit().all() if len(y_eval_series) > 0 else False):
-                if self.original_classes is not None:
-                    y_eval = y_eval_series.map(lambda x: self.original_classes[int(x)] if 0 <= int(x) < len(self.original_classes) else str(x)).values
-                else:
-                    raise ValueError("Integer labels detected in eval_set but original_classes not provided.")
-            else:
-                y_eval = y_eval_series.astype(str).values
-                
-            return self.model.fit(
-                X, y,
-                cat_features=self.cat_features,
-                eval_set=(X_eval, y_eval),
-                **kwargs
-            )
-        return self.model.fit(
-            X, y,
-            cat_features=self.cat_features,
-            **kwargs
-        )
-    def predict(self, X):
-        return self.model.predict(X)
-    def predict_proba(self, X):
-        return self.model.predict_proba(X)
-    def get_params(self, deep=True):
-        return {"model": self.model, "cat_features": self.cat_features}
-    def set_params(self, **params):
-        for key, value in params.items():
-            setattr(self, key, value)
-        return self
+Confusion Matrix:
+                  INVESTMENT  LIFE_INSURANCE  ...  OTHER_HEALTH  RETIREMENT
+INVESTMENT             33610            2168  ...             0        3514
+LIFE_INSURANCE          4547           24463  ...            36        3842
+NETWORK_PRODUCTS        2797            2195  ...             0        1967
+OTHER_HEALTH              14             130  ...            25           8
+RETIREMENT              9385            4832  ...             4       29641
 
-# Get original class labels before encoding (for mapping encoded labels back)
-# VotingClassifier's LabelEncoder encodes in sorted order, so we sort here to match
-original_classes = sorted(train_df['second_product_category'].unique())
-catboost_wrapper = CatBoostWithCatFeatures(cat_model_ensemble, cat_feature_names_ensemble, original_classes=original_classes)
+[5 rows x 5 columns]
 
-# Train individual models
-print("Training XGBoost...")
-xgb_model.fit(
-    X_train, y_train_encoded,
-    eval_set=[(X_val, y_val_encoded)],
-    verbose=False
-)
-
-print("Training LightGBM...")
-lgb_model.fit(
-    X_train, y_train_encoded,
-    eval_set=[(X_val, y_val_encoded)],
-    categorical_feature=cat_indices
-)
-
-# For CatBoost, use string labels (not encoded)
-catboost_wrapper.fit(X_train, train_df['second_product_category'])
-
-# Create ensemble
-ensemble = VotingClassifier(
-    estimators=[
-        ('catboost', catboost_wrapper),
-        ('xgboost', xgb_model),
-        ('lightgbm', lgb_model)
-    ],
-    voting='soft',
-    weights=[2, 1, 1]
-)
-ensemble.fit(X_train, train_df['second_product_category'])
-
-# Evaluate ensemble
-ensemble_pred = ensemble.predict(X_val)
-# For XGBoost/LightGBM, predictions are encoded, but for CatBoost and ensemble, they are string labels
-# So, no need to decode
-f1_macro_ensemble = f1_score(val_df['second_product_category'], ensemble_pred, average='macro')
-print(f"\n=== Ensemble Performance ===")
-print(f"Ensemble Macro F1: {f1_macro_ensemble:.4f}")
-print(f"Single CatBoost Macro F1: {f1_macro:.4f}")
-print(f"Improvement: {f1_macro_ensemble - f1_macro:.4f}")
-
-# Note: CatBoost now always uses string labels, fixing the CatBoostError.
+=== Prediction Distribution ===
+                  True Count  Predicted Count  Difference  Difference %
+INVESTMENT             39543            50353       10810         27.34
+LIFE_INSURANCE         33278            33788         510          1.53
+NETWORK_PRODUCTS        8001             2111       -5890        -73.62
+OTHER_HEALTH             179               65        -114        -63.69
+RETIREMENT             44288            38972       -5316        -12.00
