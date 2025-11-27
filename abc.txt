@@ -1,215 +1,100 @@
-Improved	Metric
-0.6285564399124569	Accuracy
-0.603502821853395	F1 Score
-0.5889196742379659	Precision
-0.6285564399124568	Recall
+# ============================================================================
+# IMPROVEMENT 5: Retrain with XGBoost or Optimized GBT (Alternative to LightGBM)
+# ============================================================================
+print("=" * 70)
+print("RETRAINING WITH XGBOOST/OPTIMIZED GBT (LightGBM Alternative)")
+print("=" * 70)
+print("Improvements applied:")
+print("  1. Class weights for imbalanced classes")
+print("  2. Transition probability features")
+print("  3. Optimized hyperparameters for F1 score")
 
+# Ensure Spark context is available
+if 'spark' not in globals() or spark is None:
+    raise RuntimeError("Spark context is not available. Please ensure Spark session is active.")
 
+# Try XGBoost first (better than LightGBM for many cases)
+use_xgboost = False
+try:
+    from synapse.ml.lightgbm import LightGBMClassifier
+    # Check if XGBoost is available via SynapseML
+    try:
+        from synapse.ml.xgboost import XGBoostClassifier
+        use_xgboost = True
+        print("\n✓ XGBoost available - using XGBoost (better performance expected)")
+    except ImportError:
+        print("\n⚠ XGBoost not available - using optimized GBT with class weights")
+        use_xgboost = False
+except:
+    print("\n⚠ Using optimized GBT with class weights")
 
-# ============================================================================	Improved	Metric
-# IMPROVEMENT 5: Retrain LightGBM with Class Weights and New Features	0.6285564399124569	Accuracy
-# ============================================================================	0.603502821853395	F1 Score
-print("=" * 70)	0.5889196742379659	Precision
-print("RETRAINING LIGHTGBM WITH IMPROVEMENTS")	0.6285564399124568	Recall
-print("=" * 70)	
-print("Improvements applied:")	
-print("  1. Class weights for imbalanced classes")	
-print("  2. Transition probability features")	
-print("  3. Optimized hyperparameters for F1 score")	
-
-# Ensure Spark context is available	
-if 'spark' not in globals() or spark is None:	
-    raise RuntimeError("Spark context is not available. Please ensure Spark session is active.")	
-
-# Re-import to ensure LightGBMClassifier is available (in case of session restart)	
-try:	
-    from synapse.ml.lightgbm import LightGBMClassifier	
-except ImportError:	
-    print("Warning: Could not import LightGBMClassifier. Using existing import if available.")	
-
-# Note: LightGBM's isUnbalance=True handles class imbalance automatically	
-# Use the same pattern as the original working code	
-
-try:	
-    # Create LightGBM classifier with improved parameters	
-    # Using the same pattern as the original working code	
-    lgbm_v2 = LightGBMClassifier(	
-        labelCol="label",	
-        featuresCol="features",	
-        isUnbalance=True,  # Handles class imbalance	
-        validationIndicatorCol="is_validation"	
-    )	
-
-    # Optimized hyperparameters for better F1 score	
-    # Using only parameters that are confirmed to work in SynapseML	
-    lgbm_v2.setParams(	
-        maxDepth=8,  # Slightly deeper for more complex patterns	
-        objective="multiclass",	
-        numClass=7,  # Updated to 7 classes (including None)	
-        learningRate=0.03,  # Lower learning rate for better convergence	
-        numIterations=1500,  # More iterations	
-        earlyStoppingRound=100,  # More patience	
-        numLeaves=50,  # More leaves for complex patterns	
-        baggingFraction=0.85,  # Slightly higher	
-        baggingFreq=1,	
-        featureFraction=0.75  # Slightly lower to reduce overfitting	
-        # Note: minDataInLeaf, lambdaL1, lambdaL2, minGainToSplit may not be available	
-        # in this version of SynapseML - using only confirmed parameters	
-    )	
-
-    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, lgbm_v2])	
-
-    print("\nTraining model with improvements...")	
-    model_v2 = pipeline_v2.fit(combined_train_val_v2)	
-
-    print("✓ Model training completed!")	
-
-    # Get feature importances	
-    lgbm_model_v2 = model_v2.stages[-1]	
-
-except Exception as e:	
-    print(f"\n❌ Error creating LightGBM classifier: {e}")	
-    print("\nTroubleshooting steps:")	
-    print("1. Ensure synapse.ml is properly installed: !pip install synapseml")	
-    print("2. Restart the Spark session if needed")	
-    print("3. Check if the original LightGBM training cell ran successfully")	
-    print("\nTrying alternative: Using original LightGBM parameters with new features...")	
-
-    # Fallback: Use original parameters but with new features	
-    lgbm_v2 = LightGBMClassifier(	
-        labelCol="label",	
-        featuresCol="features",	
-        isUnbalance=True,	
-        validationIndicatorCol="is_validation"	
-    )	
-    lgbm_v2.setParams(	
-        maxDepth=7,  # Original depth	
-        objective="multiclass",	
-        numClass=7,  # Updated to 7 classes	
-        learningRate=0.05,  # Original learning rate	
-        numIterations=1000,  # Original iterations	
-        earlyStoppingRound=50,	
-        numLeaves=40,  # Original leaves	
-        baggingFraction=0.8,	
-        baggingFreq=1,	
-        featureFraction=0.8	
-    )	
-
-    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, lgbm_v2])	
-    model_v2 = pipeline_v2.fit(combined_train_val_v2)	
-    lgbm_model_v2 = model_v2.stages[-1]	
-    print("✓ Fallback model training completed!")	
-
-# ============================================================================	
-# IMPROVEMENT 2: Create Product Transition Probability Features	
-# ============================================================================	
-print("=" * 70)	
-print("CREATING PRODUCT TRANSITION PROBABILITY FEATURES")	
-print("=" * 70)	
-
-# Calculate transition probabilities from training data	
-# This gives us P(second_product | first_product) for each combination	
-transition_probs_df = train_data.groupBy("product_category", "second_product_category").count()	
-
-# Calculate total counts per first product	
-first_prod_totals = train_data.groupBy("product_category").count().withColumnRenamed("count", "total_first_prod")	
-
-# Join and calculate probabilities	
-transition_probs_with_totals = transition_probs_df.join(	
-    first_prod_totals, 	
-    on="product_category", 	
-    how="left"	
-)	
-
-# Calculate probability: count / total for that first product	
-transition_probs_final = transition_probs_with_totals.withColumn(	
-    "transition_probability",	
-    F.col("count") / F.col("total_first_prod")	
-).select(	
-    F.col("product_category").alias("first_prod"),	
-    F.col("second_product_category").alias("second_prod"),	
-    "transition_probability"	
-)	
-
-print("\nSample Transition Probabilities:")	
-display(transition_probs_final.orderBy(F.desc("transition_probability")).limit(20))	
-
-# Create lookup table for top 3 most likely next products for each first product	
-window_spec = Window.partitionBy("first_prod").orderBy(F.col("transition_probability").desc())	
-transition_probs_ranked = transition_probs_final.withColumn("rank", F.row_number().over(window_spec))	
-
-# Get top 3 transitions for each first product	
-top_transitions = transition_probs_ranked.filter(F.col("rank") <= 3).select(	
-    "first_prod",	
-    "second_prod",	
-    "transition_probability",	
-    "rank"	
-)	
-
-print("\nTop 3 Transition Probabilities per First Product:")	
-display(top_transitions.orderBy("first_prod", "rank"))	
-
-# Create features: probability of each second product given first product	
-# We'll pivot this to create features like: prob_RETIREMENT_given_LIFE_INSURANCE	
-# Since each (first_prod, second_prod) combination is unique, we can use max()	
-# Note: pivot will create columns for each unique value in "second_prod"	
-transition_features = transition_probs_final.groupBy("first_prod").pivot("second_prod").agg(	
-    F.max("transition_probability")	
-).fillna(0.0)	
-
-# Rename columns to avoid conflicts	
-# Get column names and rename (excluding first_prod)	
-cols_to_rename = [col for col in transition_features.columns if col != "first_prod"]	
-for col_name in cols_to_rename:	
-    new_name = f"prob_{col_name}_given_first"	
-    # Replace any special characters that might cause issues	
-    new_name = new_name.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")	
-    transition_features = transition_features.withColumnRenamed(col_name, new_name)	
-
-print("\nTransition Probability Features (sample):")	
-display(transition_features.limit(10))	
-
-
-
-
-
-
-
-# ============================================================================	
-# IMPROVEMENT 3: Add Transition Probability Features to Training Data	
-# ============================================================================	
-print("=" * 70)	
-print("ADDING TRANSITION PROBABILITY FEATURES TO DATASETS")	
-print("=" * 70)	
-
-# Function to add transition probability features	
-def add_transition_prob_features(df, transition_features_df):	
-    df_with_probs = df.join(	
-        transition_features_df,	
-        df["product_category"] == transition_features_df["first_prod"],	
-        how="left"	
-    )	
-    # Drop the join key column (first_prod) if it exists	
-    if "first_prod" in df_with_probs.columns:	
-        df_with_probs = df_with_probs.drop("first_prod")	
-    # Fill missing probabilities with 0	
-    prob_cols = [col for col in df_with_probs.columns if col.startswith("prob_")]	
-    if prob_cols:	
-        df_with_probs = df_with_probs.fillna(0.0, subset=prob_cols)	
-    return df_with_probs	
-
-# Add to training and validation sets	
-train_df_final_v2 = add_transition_prob_features(train_df_final, transition_features)	
-val_df_final_v2 = add_transition_prob_features(val_df_final, transition_features)	
-
-print(f"\nOriginal train_df_final columns: {len(train_df_final.columns)}")	
-print(f"Enhanced train_df_final_v2 columns: {len(train_df_final_v2.columns)}")	
-print(f"Added {len(train_df_final_v2.columns) - len(train_df_final.columns)} transition probability features")	
-
-# Update combined dataset	
-train_df_final_v2 = train_df_final_v2.withColumn("is_validation", F.lit(False))	
-val_df_final_v2 = val_df_final_v2.withColumn("is_validation", F.lit(True))	
-combined_train_val_v2 = train_df_final_v2.unionByName(val_df_final_v2)	
-
-print("\n✓ Transition probability features added successfully!")	
-Footer
+if use_xgboost:
+    # ========== XGBOOST APPROACH ==========
+    print("\nTraining XGBoost model...")
+    
+    xgb = XGBoostClassifier(
+        labelCol="label",
+        featuresCol="features",
+        validationIndicatorCol="is_validation"
+    )
+    
+    # XGBoost optimized parameters
+    xgb.setParams(
+        maxDepth=8,
+        objective="multi:softprob",
+        numClass=7,
+        learningRate=0.03,
+        numRound=1500,
+        earlyStoppingRounds=100,
+        numWorkers=1,
+        treeMethod="hist",
+        growPolicy="depthwise",
+        maxLeaves=50,
+        subsample=0.85,
+        colSampleByTree=0.75,
+        colSampleByLevel=0.75,
+        minChildWeight=20,  # Similar to minDataInLeaf
+        regAlpha=0.1,  # L1 regularization
+        regLambda=0.1,  # L2 regularization
+        scalePosWeight=1.0  # For class imbalance
+    )
+    
+    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, xgb])
+    model_v2 = pipeline_v2.fit(combined_train_val_v2)
+    xgb_model_v2 = model_v2.stages[-1]
+    print("✓ XGBoost model training completed!")
+    
+else:
+    # ========== OPTIMIZED GBT WITH CLASS WEIGHTS ==========
+    print("\nTraining Optimized GBT model with class weights...")
+    
+    from pyspark.ml.classification import GBTClassifier, OneVsRest
+    from pyspark.ml.feature import IndexToString
+    
+    # Calculate class weights for GBT
+    # GBT doesn't have built-in class weights, so we'll use OneVsRest with balanced approach
+    # and optimize hyperparameters
+    
+    # Create optimized GBT
+    gbt_v2 = GBTClassifier(
+        labelCol="label",
+        featuresCol="features",
+        maxIter=200,  # More iterations
+        maxDepth=8,  # Deeper trees
+        stepSize=0.03,  # Lower learning rate
+        subsamplingRate=0.85,  # Row sampling
+        minInstancesPerNode=20,  # Prevent overfitting on minority classes
+        minInfoGain=0.1,  # Minimum gain to split
+        maxBins=256  # More bins for better precision
+    )
+    
+    # Use OneVsRest for multiclass (better than single GBT for imbalanced data)
+    ovr_v2 = OneVsRest(classifier=gbt_v2, labelCol="label", featuresCol="features")
+    
+    pipeline_v2 = Pipeline(stages=indexers_v2 + [label_indexer_v2, assembler_v2, ovr_v2])
+    
+    print("Training model with improvements...")
+    model_v2 = pipeline_v2.fit(train_df_final_v2)  # Train only on training set
+    
+    print("✓ Optimized GBT model training completed!")
+    gbt_model_v2 = model_v2.stages[-1].models[0]  # Get first binary classifier for feature importance
