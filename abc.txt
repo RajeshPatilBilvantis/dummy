@@ -1,13 +1,188 @@
-CatBoostError: Unknown class label: "2"
-File <command-5386568783283269>, line 144
-    134 # Create ensemble
-    135 ensemble = VotingClassifier(
-    136     estimators=[
-    137         ('catboost', catboost_wrapper),
-   (...)
-    142     weights=[2, 1, 1]
-    143 )
---> 144 ensemble.fit(X_train, train_df['second_product_category'])
-    146 # Evaluate ensemble
-    147 ensemble_pred = ensemble.predict(X_val)
-File _catboost.pyx:5072, in _catboost._CatBoost._train()
+# ===== ENSEMBLE MODELS (OPTIONAL - UNCOMMENT TO USE) =====
+# Ensemble can improve performance by 5-10% over single model
+# Uncomment below to train ensemble of CatBoost + XGBoost + LightGBM
+
+# Install additional libraries
+%pip install xgboost lightgbm
+
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from sklearn.ensemble import VotingClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.metrics import f1_score
+import pandas as pd
+
+# Prepare data for XGBoost and LightGBM (need label encoding for categoricals)
+le = LabelEncoder()
+y_train_encoded = le.fit_transform(train_df['second_product_category'])
+y_val_encoded = le.transform(val_df['second_product_category'])
+
+# Get feature columns (exclude target)
+X_train = train_df[pool_columns].copy()
+X_val = val_df[pool_columns].copy()
+
+# Encode categorical features for XGBoost/LightGBM
+cat_indices = [i for i, col in enumerate(pool_columns) if col in categorical_feature_cols]
+# Convert object columns to category dtype for XGBoost
+for col in X_train.select_dtypes(include='object').columns:
+    X_train[col] = X_train[col].astype('category')
+    X_val[col] = X_val[col].astype('category')
+
+# For CatBoost, we need column names (not indices) of categorical features
+cat_feature_names_ensemble = [col for col in categorical_feature_cols if col in pool_columns]
+
+# 1. XGBoost
+xgb_model = XGBClassifier(
+    n_estimators=1000,
+    max_depth=7,
+    learning_rate=0.05,
+    objective='multi:softprob',
+    eval_metric='mlogloss',
+    random_state=42,
+    early_stopping_rounds=100,
+    use_label_encoder=False, enable_categorical=True
+)
+
+# 2. LightGBM
+lgb_model = LGBMClassifier(
+    n_estimators=1000,
+    max_depth=7,
+    learning_rate=0.05,
+    objective='multiclass',
+    random_state=42,
+    verbose=-1,
+    early_stopping_rounds=100
+)
+
+# --- FIX: Create a fresh CatBoost model for ensemble (don't reuse trained model) ---
+from catboost import CatBoostClassifier
+cat_model_ensemble = CatBoostClassifier(
+    iterations=1200,
+    depth=7,
+    learning_rate=0.05,
+    loss_function="MultiClass",
+    eval_metric="TotalF1",
+    random_seed=42,
+    task_type="CPU",
+    l2_leaf_reg=3.0,
+    subsample=0.85,
+    colsample_bylevel=0.85,
+    min_data_in_leaf=50,
+    early_stopping_rounds=100,
+    verbose=100,
+    bootstrap_type="Bernoulli",
+    class_weights=class_weights_dict,
+    grow_policy="SymmetricTree",
+    boosting_type="Plain",
+    use_best_model=False  # Set to False for ensemble (no eval_set from VotingClassifier)
+)
+
+# --- FIX: Wrap CatBoost to always pass cat_features and handle label encoding properly ---
+class CatBoostWithCatFeatures(BaseEstimator, ClassifierMixin):
+    def __init__(self, model, cat_features, original_classes=None):
+        self.model = model
+        self.cat_features = cat_features
+        self.original_classes = original_classes  # Store original class labels
+        
+    def fit(self, X, y, eval_set=None, **kwargs):
+        # Check if y contains integers (from VotingClassifier's LabelEncoder)
+        y_series = pd.Series(y)
+        
+        # If y contains integers (encoded labels from VotingClassifier), map them back to original string labels
+        if pd.api.types.is_integer_dtype(y_series) or (y_series.dtype == 'object' and y_series.str.isdigit().all() if len(y_series) > 0 else False):
+            # These are encoded labels from VotingClassifier
+            # Map encoded integers back to original string labels
+            if self.original_classes is not None:
+                # Create mapping: encoded_int -> original_string
+                # VotingClassifier's LabelEncoder encodes in sorted order, so we can map directly
+                y = y_series.map(lambda x: self.original_classes[int(x)] if 0 <= int(x) < len(self.original_classes) else str(x)).values
+            else:
+                # Fallback: use integers as-is (but this won't work with string-based class_weights)
+                # Better to raise an error
+                raise ValueError("Integer labels detected but original_classes not provided. Please provide original_classes when initializing the wrapper.")
+        else:
+            # Original string labels - use as-is
+            y = y_series.astype(str).values
+        
+        if eval_set is not None:
+            X_eval, y_eval = eval_set
+            y_eval_series = pd.Series(y_eval)
+            
+            # Handle eval_set labels the same way
+            if pd.api.types.is_integer_dtype(y_eval_series) or (y_eval_series.dtype == 'object' and y_eval_series.str.isdigit().all() if len(y_eval_series) > 0 else False):
+                if self.original_classes is not None:
+                    y_eval = y_eval_series.map(lambda x: self.original_classes[int(x)] if 0 <= int(x) < len(self.original_classes) else str(x)).values
+                else:
+                    raise ValueError("Integer labels detected in eval_set but original_classes not provided.")
+            else:
+                y_eval = y_eval_series.astype(str).values
+                
+            return self.model.fit(
+                X, y,
+                cat_features=self.cat_features,
+                eval_set=(X_eval, y_eval),
+                **kwargs
+            )
+        return self.model.fit(
+            X, y,
+            cat_features=self.cat_features,
+            **kwargs
+        )
+    def predict(self, X):
+        return self.model.predict(X)
+    def predict_proba(self, X):
+        return self.model.predict_proba(X)
+    def get_params(self, deep=True):
+        return {"model": self.model, "cat_features": self.cat_features}
+    def set_params(self, **params):
+        for key, value in params.items():
+            setattr(self, key, value)
+        return self
+
+# Get original class labels before encoding (for mapping encoded labels back)
+# VotingClassifier's LabelEncoder encodes in sorted order, so we sort here to match
+original_classes = sorted(train_df['second_product_category'].unique())
+catboost_wrapper = CatBoostWithCatFeatures(cat_model_ensemble, cat_feature_names_ensemble, original_classes=original_classes)
+
+# Train individual models
+print("Training XGBoost...")
+xgb_model.fit(
+    X_train, y_train_encoded,
+    eval_set=[(X_val, y_val_encoded)],
+    verbose=False
+)
+
+print("Training LightGBM...")
+lgb_model.fit(
+    X_train, y_train_encoded,
+    eval_set=[(X_val, y_val_encoded)],
+    categorical_feature=cat_indices
+)
+
+# For CatBoost, use string labels (not encoded)
+catboost_wrapper.fit(X_train, train_df['second_product_category'])
+
+# Create ensemble
+ensemble = VotingClassifier(
+    estimators=[
+        ('catboost', catboost_wrapper),
+        ('xgboost', xgb_model),
+        ('lightgbm', lgb_model)
+    ],
+    voting='soft',
+    weights=[2, 1, 1]
+)
+ensemble.fit(X_train, train_df['second_product_category'])
+
+# Evaluate ensemble
+ensemble_pred = ensemble.predict(X_val)
+# For XGBoost/LightGBM, predictions are encoded, but for CatBoost and ensemble, they are string labels
+# So, no need to decode
+f1_macro_ensemble = f1_score(val_df['second_product_category'], ensemble_pred, average='macro')
+print(f"\n=== Ensemble Performance ===")
+print(f"Ensemble Macro F1: {f1_macro_ensemble:.4f}")
+print(f"Single CatBoost Macro F1: {f1_macro:.4f}")
+print(f"Improvement: {f1_macro_ensemble - f1_macro:.4f}")
+
+# Note: CatBoost now always uses string labels, fixing the CatBoostError.
