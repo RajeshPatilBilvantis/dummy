@@ -1,416 +1,110 @@
-# ===== AGGRESSIVE IMPROVEMENTS FOR F1 SCORE =====
-# Previous run: Only 0.52 -> 0.53 improvement (minimal)
-# This version uses MUCH MORE AGGRESSIVE strategies:
-# 1. SMOTE: 85%/80% for minority classes (was 60%/50%)
-# 2. Class weights: 4.0x/5.0x for minority (was 2.5x/2.0x)
-# 3. Deeper trees, lower min_data_in_leaf for minority classes
-# 4. Lower thresholds for minority classes (improve recall)
-# 5. Minority class-specific features
+Requirement already satisfied: catboost in /local_disk0/.ephemeral_nfs/envs/pythonEnv-43f2026b-0b8e-44dc-88f3-215fd1e4ebaf/lib/python3.12/site-packages (1.2.8)
+Requirement already satisfied: graphviz in /local_disk0/.ephemeral_nfs/envs/pythonEnv-43f2026b-0b8e-44dc-88f3-215fd1e4ebaf/lib/python3.12/site-packages (from catboost) (0.21)
+Requirement already satisfied: matplotlib in /databricks/python3/lib/python3.12/site-packages (from catboost) (3.8.4)
+Requirement already satisfied: numpy<3.0,>=1.16.0 in /databricks/python3/lib/python3.12/site-packages (from catboost) (1.26.4)
+Requirement already satisfied: pandas>=0.24 in /databricks/python3/lib/python3.12/site-packages (from catboost) (1.5.3)
+Requirement already satisfied: scipy in /databricks/python3/lib/python3.12/site-packages (from catboost) (1.13.1)
+Requirement already satisfied: plotly in /databricks/python3/lib/python3.12/site-packages (from catboost) (5.22.0)
+Requirement already satisfied: six in /usr/lib/python3/dist-packages (from catboost) (1.16.0)
+Requirement already satisfied: python-dateutil>=2.8.1 in /databricks/python3/lib/python3.12/site-packages (from pandas>=0.24->catboost) (2.9.0.post0)
+Requirement already satisfied: pytz>=2020.1 in /databricks/python3/lib/python3.12/site-packages (from pandas>=0.24->catboost) (2024.1)
+Requirement already satisfied: contourpy>=1.0.1 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (1.2.0)
+Requirement already satisfied: cycler>=0.10 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (0.11.0)
+Requirement already satisfied: fonttools>=4.22.0 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (4.51.0)
+Requirement already satisfied: kiwisolver>=1.3.1 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (1.4.4)
+Requirement already satisfied: packaging>=20.0 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (24.1)
+Requirement already satisfied: pillow>=8 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (10.3.0)
+Requirement already satisfied: pyparsing>=2.3.1 in /databricks/python3/lib/python3.12/site-packages (from matplotlib->catboost) (3.0.9)
+Requirement already satisfied: tenacity>=6.2.0 in /databricks/python3/lib/python3.12/site-packages (from plotly->catboost) (8.2.2)
+Note: you may need to restart the kernel using %restart_python or dbutils.library.restartPython() to use updated packages.
+0:	learn: 0.5890822	test: 0.5436404	best: 0.5436404 (0)	total: 1.01s	remaining: 33m 45s
+100:	learn: 0.6934915	test: 0.6243590	best: 0.6243590 (100)	total: 1m 21s	remaining: 25m 32s
+200:	learn: 0.7161553	test: 0.6420967	best: 0.6421369 (199)	total: 2m 44s	remaining: 24m 28s
+300:	learn: 0.7262047	test: 0.6490399	best: 0.6490884 (298)	total: 4m 4s	remaining: 23m
+400:	learn: 0.7325734	test: 0.6529383	best: 0.6529801 (398)	total: 5m 25s	remaining: 21m 39s
+500:	learn: 0.7369479	test: 0.6559086	best: 0.6559086 (500)	total: 6m 42s	remaining: 20m 4s
+600:	learn: 0.7404941	test: 0.6594923	best: 0.6594923 (600)	total: 7m 59s	remaining: 18m 36s
+700:	learn: 0.7435882	test: 0.6619023	best: 0.6619023 (700)	total: 9m 19s	remaining: 17m 16s
+800:	learn: 0.7460470	test: 0.6640801	best: 0.6640801 (800)	total: 10m 40s	remaining: 15m 58s
+900:	learn: 0.7482039	test: 0.6656242	best: 0.6656685 (896)	total: 11m 57s	remaining: 14m 35s
+1000:	learn: 0.7500720	test: 0.6674634	best: 0.6674634 (1000)	total: 13m 16s	remaining: 13m 14s
+1100:	learn: 0.7517213	test: 0.6686648	best: 0.6686752 (1098)	total: 14m 36s	remaining: 11m 55s
+1200:	learn: 0.7534690	test: 0.6695493	best: 0.6695724 (1194)	total: 15m 55s	remaining: 10m 35s
+1300:	learn: 0.7549754	test: 0.6700065	best: 0.6700688 (1278)	total: 17m 13s	remaining: 9m 15s
+1400:	learn: 0.7563688	test: 0.6707856	best: 0.6709343 (1387)	total: 18m 32s	remaining: 7m 55s
+1500:	learn: 0.7576612	test: 0.6714439	best: 0.6715028 (1496)	total: 19m 52s	remaining: 6m 36s
+1600:	learn: 0.7589125	test: 0.6721822	best: 0.6721822 (1600)	total: 21m 14s	remaining: 5m 17s
+1700:	learn: 0.7599913	test: 0.6726183	best: 0.6727505 (1683)	total: 22m 35s	remaining: 3m 58s
+1800:	learn: 0.7611902	test: 0.6733419	best: 0.6734595 (1795)	total: 23m 57s	remaining: 2m 38s
+1900:	learn: 0.7623633	test: 0.6739788	best: 0.6739959 (1899)	total: 25m 16s	remaining: 1m 18s
+1999:	learn: 0.7633667	test: 0.6743500	best: 0.6744213 (1988)	total: 26m 37s	remaining: 0us
 
-from catboost import CatBoostClassifier
-from catboost import Pool, cv, MetricVisualizer
-from sklearn.metrics import f1_score, confusion_matrix, classification_report, accuracy_score, precision_score, recall_score
+bestTest = 0.6744213366
+bestIteration = 1988
 
-print("=" * 80)
-print("AGGRESSIVE MODEL IMPROVEMENTS FOR F1 OPTIMIZATION")
-print("=" * 80)
-print("Previous result: 0.52 -> 0.53 (minimal improvement)")
-print("This version: Much more aggressive SMOTE, class weights, and features")
-print("=" * 80)
+Shrink model to first 1989 iterations.
+Regularized CatBoost model trained
 
-# ===== 1. IMPROVED SMOTE STRATEGY (BALANCED - NOT TOO AGGRESSIVE) =====
-print("\n[1/5] Applying Improved SMOTE Strategy...")
-print("  Using balanced approach - aggressive enough to help but not too slow")
-from imblearn.over_sampling import SMOTE, BorderlineSMOTE
-from collections import Counter
-from sklearn.preprocessing import LabelEncoder
+=== Model Performance ===
+Macro F1: 0.5201
+Weighted F1: 0.6949
+Accuracy: 0.7086
+Macro Precision: 0.6061
+Macro Recall: 0.5048
 
-# Recalculate class distribution after previous resampling
-class_counts_current = train_df['second_product_category'].value_counts()
-majority_class_size = class_counts_current.max()
+=== Classification Report ===
+                  precision    recall  f1-score   support
 
-# AGGRESSIVE upsampling - need much more data for minority classes to improve F1
-# Current results show only 0.52->0.53 improvement - need more aggressive approach
-target_sizes_improved = {}
-for class_name, count in class_counts_current.items():
-    if class_name == 'NETWORK_PRODUCTS':
-        target_ratio = 0.85  # 85% of majority (AGGRESSIVE - was 60%)
-    elif class_name == 'OTHER_HEALTH':
-        target_ratio = 0.80  # 80% of majority (AGGRESSIVE - was 50%)
-    else:
-        target_ratio = 0.50  # 50% for other classes (moderate)
-    
-    target_size = int(majority_class_size * target_ratio)
-    if count < target_size:
-        target_sizes_improved[class_name] = target_size
-        print(f"  {class_name}: {count} -> {target_size} (upsampling to {target_ratio*100:.0f}% of majority)")
+      INVESTMENT       0.67      0.85      0.75     39543
+  LIFE_INSURANCE       0.72      0.74      0.73     33278
+NETWORK_PRODUCTS       0.49      0.13      0.21      8001
+    OTHER_HEALTH       0.38      0.14      0.20       179
+      RETIREMENT       0.76      0.67      0.71     44288
 
-if target_sizes_improved:
-    # Prepare data for resampling
-    X_train_smote = train_df[pool_columns].copy()
-    y_train_smote = train_df['second_product_category'].copy()
-    
-    # Encode categoricals
-    cat_encoders_improved = {}
-    X_train_smote_encoded = X_train_smote.copy()
-    categorical_cols_smote = [col for col in pool_columns if col in categorical_feature_cols]
-    
-    for col in categorical_cols_smote:
-        if col in X_train_smote_encoded.columns:
-            le = LabelEncoder()
-            mask = X_train_smote_encoded[col].isna()
-            X_train_smote_encoded[col] = X_train_smote_encoded[col].astype(str)
-            X_train_smote_encoded.loc[mask, col] = 'UNKNOWN'
-            X_train_smote_encoded[col] = le.fit_transform(X_train_smote_encoded[col])
-            cat_encoders_improved[col] = le
-    
-    # Use BorderlineSMOTE (faster than SVMSMOTE, still good quality)
-    min_class_size = min(train_df['second_product_category'].value_counts().values)
-    safe_k_neighbors = min(5, min_class_size - 1) if min_class_size > 1 else 1
-    
-    print("  Using BorderlineSMOTE (good quality, faster than SVMSMOTE)...")
-    try:
-        smote_improved = BorderlineSMOTE(
-            sampling_strategy=target_sizes_improved,
-            random_state=42,
-            k_neighbors=safe_k_neighbors,
-            kind='borderline-1'  # Less aggressive variant (faster)
-        )
-        X_train_resampled, y_train_resampled = smote_improved.fit_resample(X_train_smote_encoded, y_train_smote)
-    except Exception as e:
-        print(f"  BorderlineSMOTE failed ({e}), using regular SMOTE...")
-        smote_improved = SMOTE(
-            sampling_strategy=target_sizes_improved,
-            random_state=42,
-            k_neighbors=safe_k_neighbors
-        )
-        X_train_resampled, y_train_resampled = smote_improved.fit_resample(X_train_smote_encoded, y_train_smote)
-    
-    # Reconstruct train_df
-    train_df_resampled = pd.DataFrame(X_train_resampled, columns=pool_columns)
-    
-    # Decode categoricals
-    for col in categorical_cols_smote:
-        if col in train_df_resampled.columns and col in cat_encoders_improved:
-            train_df_resampled[col] = train_df_resampled[col].round().astype(int)
-            valid_range = range(len(cat_encoders_improved[col].classes_))
-            train_df_resampled[col] = train_df_resampled[col].clip(min(valid_range), max(valid_range))
-            train_df_resampled[col] = cat_encoders_improved[col].inverse_transform(train_df_resampled[col])
-    
-    train_df_resampled['second_product_category'] = y_train_resampled
-    train_df = train_df_resampled.copy()
-    
-    print(f"  After aggressive resampling: {Counter(y_train_resampled)}")
-    print(f"  Train size: {len(train_df)} (was {len(X_train_smote)})")
+        accuracy                           0.71    125289
+       macro avg       0.61      0.50      0.52    125289
+    weighted avg       0.70      0.71      0.69    125289
 
-# ===== 2. SIMPLE FEATURE SELECTION (QUICK) =====
-print("\n[2/5] Applying Quick Feature Selection...")
-print("  Using simple variance-based selection (fast) instead of mutual information")
 
-# Quick feature selection: remove low-variance features (much faster than mutual info)
-from sklearn.feature_selection import VarianceThreshold
+=== Top 20 Feature Importances ===
+                          feature  importance
+23                years_to_second   18.073874
+30        days_since_first_policy   10.984556
+36                  register_year    7.725288
+45   agent_most_common_cross_sell    6.806942
+3                         psn_age    3.803803
+9                   division_name    3.640326
+48        product_age_interaction    3.605422
+8             sub_product_level_2    3.553014
+52      years_product_interaction    3.517985
+49  product_agent_seg_interaction    3.395349
+22            age_at_first_policy    3.307320
+40      agent_p1_cross_sell_count    3.298209
+41     branch_p1_cross_sell_count    2.562124
+7             sub_product_level_1    2.326406
+46               agent_avg_assets    2.070741
+26                   log_face_amt    2.067589
+47        product_aum_interaction    1.691683
+5                    client_seg_1    1.514330
+16       annuity_allocation_ratio    1.123015
+25        log_wc_assetmix_annuity    1.089340
 
-# Only apply to numerical features (categoricals handled by CatBoost)
-numerical_cols_for_selection = [col for col in pool_columns if col in numerical_feature_cols]
+=== Per-Class Performance Analysis ===
 
-if len(numerical_cols_for_selection) > 0:
-    # Quick variance threshold (removes near-constant features)
-    X_train_num = train_df[numerical_cols_for_selection].fillna(0)
-    selector = VarianceThreshold(threshold=0.01)  # Remove features with <1% variance
-    selector.fit(X_train_num)
-    
-    selected_num_features = [numerical_cols_for_selection[i] for i in range(len(numerical_cols_for_selection)) if selector.variances_[i] >= 0.01]
-    removed_count = len(numerical_cols_for_selection) - len(selected_num_features)
-    
-    print(f"  Removed {removed_count} low-variance numerical features")
-    print(f"  Keeping {len(selected_num_features)} numerical features")
-    
-    # Combine with all categorical features (CatBoost handles them well)
-    pool_columns_selected = selected_num_features + [col for col in pool_columns if col in categorical_feature_cols]
-else:
-    # If no numerical features to filter, use all features
-    pool_columns_selected = pool_columns.copy()
+Confusion Matrix:
+                  INVESTMENT  LIFE_INSURANCE  ...  OTHER_HEALTH  RETIREMENT
+INVESTMENT             33610            2168  ...             0        3514
+LIFE_INSURANCE          4547           24463  ...            36        3842
+NETWORK_PRODUCTS        2797            2195  ...             0        1967
+OTHER_HEALTH              14             130  ...            25           8
+RETIREMENT              9385            4832  ...             4       29641
 
-print(f"  Total features for training: {len(pool_columns_selected)}")
+[5 rows x 5 columns]
 
-# ===== 3. OPTIMIZED HYPERPARAMETERS (NO OPTUNA - TOO SLOW) =====
-print("\n[3/5] Using Proven Hyperparameters (Optuna removed - was taking 18+ hours)...")
-print("  Using optimized hyperparameters based on best practices for imbalanced multi-class F1 optimization")
-
-# Proven hyperparameters for imbalanced multi-class classification (F1-optimized)
-# These are based on extensive testing and avoid the 18+ hour Optuna bottleneck
-# More aggressive hyperparameters for minority class learning
-best_params = {
-    'iterations': 3500,  # More iterations for better learning
-    'depth': 9,  # Deeper trees to capture complex minority class patterns
-    'learning_rate': 0.015,  # Even lower LR for more stable learning with aggressive weights
-    'l2_leaf_reg': 3.0,  # Less regularization to allow more complex patterns
-    'subsample': 0.75,  # More subsampling for diversity
-    'colsample_bylevel': 0.75,  # More feature subsampling
-    'min_data_in_leaf': 10,  # Much lower for minority classes (was 15)
-    'max_ctr_complexity': 5,  # More complex categorical interactions
-    'random_strength': 1.5,  # More randomness for generalization
-}
-
-print(f"  Hyperparameters: {best_params}")
-
-# ===== 4. ADD MINORITY CLASS-SPECIFIC FEATURES =====
-print("\n[4/6] Adding Minority Class-Specific Features...")
-print("  Creating features to help identify NETWORK_PRODUCTS and OTHER_HEALTH")
-
-# Add features specifically designed to help identify minority classes
-if 'product_category' in train_df.columns:
-    # Network product indicators (stronger signals)
-    train_df['is_network_first'] = (train_df['product_category'] == 'NETWORK_PRODUCTS').astype(int)
-    val_df['is_network_first'] = (val_df['product_category'] == 'NETWORK_PRODUCTS').astype(int)
-    
-    # Health-related indicators
-    train_df['is_health_related'] = (
-        (train_df['product_category'].str.contains('HEALTH', case=False, na=False)) |
-        (train_df.get('sub_product_level_1', pd.Series()).str.contains('HEALTH', case=False, na=False))
-    ).astype(int)
-    val_df['is_health_related'] = (
-        (val_df['product_category'].str.contains('HEALTH', case=False, na=False)) |
-        (val_df.get('sub_product_level_1', pd.Series()).str.contains('HEALTH', case=False, na=False))
-    ).astype(int)
-    
-    # Network transition probability (from train only)
-    if 'network_transition_prob' not in train_df.columns:
-        network_transitions = train_df.groupby('product_category').agg({
-            'second_product_category': lambda x: (x == 'NETWORK_PRODUCTS').mean()
-        }).reset_index()
-        network_transitions.columns = ['product_category', 'network_transition_prob']
-        train_df = train_df.merge(network_transitions, on='product_category', how='left')
-        val_df = val_df.merge(network_transitions, on='product_category', how='left')
-        train_df['network_transition_prob'] = train_df['network_transition_prob'].fillna(0)
-        val_df['network_transition_prob'] = val_df['network_transition_prob'].fillna(0)
-    
-    # Other health transition probability
-    if 'other_health_transition_prob' not in train_df.columns:
-        other_health_transitions = train_df.groupby('product_category').agg({
-            'second_product_category': lambda x: (x == 'OTHER_HEALTH').mean()
-        }).reset_index()
-        other_health_transitions.columns = ['product_category', 'other_health_transition_prob']
-        train_df = train_df.merge(other_health_transitions, on='product_category', how='left')
-        val_df = val_df.merge(other_health_transitions, on='product_category', how='left')
-        train_df['other_health_transition_prob'] = train_df['other_health_transition_prob'].fillna(0)
-        val_df['other_health_transition_prob'] = val_df['other_health_transition_prob'].fillna(0)
-    
-    # Add to feature lists
-    new_features = ['is_network_first', 'is_health_related']
-    for feat in new_features:
-        if feat not in numerical_feature_cols:
-            numerical_feature_cols.append(feat)
-        if feat not in pool_columns_selected:
-            pool_columns_selected.append(feat)
-    
-    print(f"  Added {len(new_features)} minority class-specific features")
-    print(f"  Total features now: {len(pool_columns_selected)}")
-
-# ===== 5. TRAIN OPTIMIZED CATBOOST MODEL =====
-
-print("\n[5/6] Training Optimized CatBoost Model...")
-
-cat_feature_names = [col for col in categorical_feature_cols if col in pool_columns_selected]
-
-train_pool_optimized = Pool(
-    data=train_df[pool_columns_selected],
-    label=train_df["second_product_category"],
-    cat_features=cat_feature_names,
-)
-
-val_pool_optimized = Pool(
-    data=val_df[pool_columns_selected],
-    label=val_df["second_product_category"],
-    cat_features=cat_feature_names,
-)
-
-# Recalculate class weights after aggressive resampling
-class_counts_after = train_df['second_product_category'].value_counts()
-total_samples_after = len(train_df)
-num_classes_after = len(class_counts_after)
-
-class_weights_dict_optimized = {}
-# MUCH MORE AGGRESSIVE cost matrix - current results show minimal improvement
-# Need to heavily penalize misclassification of minority classes
-cost_matrix_optimized = {
-    'NETWORK_PRODUCTS': 4.0,  # QUADRUPLE weight (was 2.5) - F1 only 0.30
-    'OTHER_HEALTH': 5.0,  # 5x weight (was 2.0) - F1 only 0.25, only 182 samples
-    'RETIREMENT': 1.0,
-    'LIFE_INSURANCE': 1.0,
-    'INVESTMENT': 0.8  # Slightly lower (over-predicted)
-}
-
-for class_name, count in class_counts_after.items():
-    balanced_weight = total_samples_after / (num_classes_after * count)
-    cube_root_scaled_weight = np.power(balanced_weight, 1/3)
-    
-    if class_name in cost_matrix_optimized:
-        cube_root_scaled_weight *= cost_matrix_optimized[class_name]
-    
-    capped_weight = min(max(cube_root_scaled_weight, 0.3), 20.0)  # Much higher cap for aggressive weights
-    class_weights_dict_optimized[class_name] = capped_weight
-
-print("  Optimized class weights:")
-for k, v in sorted(class_weights_dict_optimized.items(), key=lambda x: x[1], reverse=True):
-    print(f"    {k}: {v:.4f}")
-
-# Train model with optimized parameters
-cat_model_optimized = CatBoostClassifier(
-    **best_params,
-    loss_function="MultiClass",
-    eval_metric="TotalF1",
-    random_seed=42,
-    task_type="CPU",
-    early_stopping_rounds=200,
-    verbose=100,
-    class_weights=class_weights_dict_optimized,
-    grow_policy="SymmetricTree",
-    use_best_model=True,
-    bootstrap_type="Bernoulli",
-    boosting_type="Plain",
-    one_hot_max_size=10,
-    sampling_frequency='PerTree'
-)
-
-cat_model_optimized.fit(
-    train_pool_optimized,
-    eval_set=val_pool_optimized,
-    use_best_model=True
-)
-
-print("  Optimized CatBoost model trained")
-
-# ===== 6. IMPROVED THRESHOLD TUNING WITH F1 OPTIMIZATION =====
-print("\n[6/6] Applying Advanced Threshold Tuning...")
-
-val_probabilities_optimized = cat_model_optimized.predict_proba(val_pool_optimized)
-classes_optimized = cat_model_optimized.classes_
-
-def find_optimal_thresholds_advanced(y_true, y_proba, classes, metric='f1'):
-    """Advanced threshold tuning with multiple metrics"""
-    optimal_thresholds = {}
-    optimal_scores = {}
-    
-    for i, class_name in enumerate(classes):
-        y_binary = (y_true == class_name).astype(int)
-        proba_class = y_proba[:, i]
-        
-        # Much wider and lower threshold range for minority classes
-        # They need very low thresholds to improve recall (F1 is low due to low recall)
-        if class_name == 'NETWORK_PRODUCTS':
-            threshold_range = np.arange(0.01, 0.50, 0.002)  # Very granular, lower range
-        elif class_name == 'OTHER_HEALTH':
-            threshold_range = np.arange(0.01, 0.40, 0.002)  # Even lower for smallest class
-        else:
-            threshold_range = np.arange(0.05, 0.95, 0.01)
-        
-        best_threshold = 0.5
-        best_score = 0
-        
-        for threshold in threshold_range:
-            y_pred_binary = (proba_class >= threshold).astype(int)
-            
-            if metric == 'f1':
-                score = f1_score(y_binary, y_pred_binary, zero_division=0)
-            elif metric == 'f2':  # F2 score (emphasizes recall)
-                from sklearn.metrics import fbeta_score
-                score = fbeta_score(y_binary, y_pred_binary, beta=2, zero_division=0)
-            else:
-                score = f1_score(y_binary, y_pred_binary, zero_division=0)
-            
-            if score > best_score:
-                best_score = score
-                best_threshold = threshold
-        
-        optimal_thresholds[class_name] = best_threshold
-        optimal_scores[class_name] = best_score
-        print(f"  {class_name}: threshold={best_threshold:.3f}, {metric.upper()}={best_score:.3f}")
-    
-    return optimal_thresholds, optimal_scores
-
-optimal_thresholds_advanced, optimal_scores = find_optimal_thresholds_advanced(
-    val_df['second_product_category'],
-    val_probabilities_optimized,
-    classes_optimized,
-    metric='f1'
-)
-
-# Apply thresholds
-def predict_with_thresholds_advanced(proba, classes, thresholds):
-    """Advanced threshold-based prediction"""
-    valid_classes = []
-    valid_scores = []
-    
-    for i, class_name in enumerate(classes):
-        if proba[i] >= thresholds[class_name]:
-            valid_classes.append(i)
-            valid_scores.append(proba[i])
-    
-    if len(valid_classes) > 0:
-        best_idx = valid_classes[np.argmax(valid_scores)]
-        return classes[best_idx]
-    else:
-        return classes[np.argmax(proba)]
-
-val_predictions_optimized = np.array([
-    predict_with_thresholds_advanced(val_probabilities_optimized[i], classes_optimized, optimal_thresholds_advanced)
-    for i in range(len(val_probabilities_optimized))
-])
-
-# ===== 6. EVALUATE OPTIMIZED MODEL =====
-print("\nEvaluating Optimized Model...")
-
-f1_macro_optimized = f1_score(val_df['second_product_category'], val_predictions_optimized, average='macro')
-f1_weighted_optimized = f1_score(val_df['second_product_category'], val_predictions_optimized, average='weighted')
-accuracy_optimized = accuracy_score(val_df['second_product_category'], val_predictions_optimized)
-precision_optimized = precision_score(val_df['second_product_category'], val_predictions_optimized, average='macro')
-recall_optimized = recall_score(val_df['second_product_category'], val_predictions_optimized, average='macro')
-
-print(f"\n=== OPTIMIZED MODEL PERFORMANCE ===")
-print(f"Macro F1: {f1_macro_optimized:.4f}")
-print(f"Weighted F1: {f1_weighted_optimized:.4f}")
-print(f"Accuracy: {accuracy_optimized:.4f}")
-print(f"Macro Precision: {precision_optimized:.4f}")
-print(f"Macro Recall: {recall_optimized:.4f}")
-
-print("\n=== Classification Report (Optimized) ===")
-print(classification_report(val_df['second_product_category'], val_predictions_optimized))
-
-# Per-class performance
-print("\n=== Per-Class F1 Scores ===")
-from sklearn.metrics import f1_score
-for class_name in classes_optimized:
-    f1_class = f1_score(
-        val_df['second_product_category'] == class_name,
-        val_predictions_optimized == class_name,
-        zero_division=0
-    )
-    print(f"  {class_name}: {f1_class:.4f}")
-
-# ===== 7. FEATURE IMPORTANCE ANALYSIS =====
-print("\nFeature Importance Analysis...")
-feature_importance_optimized = cat_model_optimized.get_feature_importance()
-importance_df_optimized = pd.DataFrame({
-    'feature': pool_columns_selected,
-    'importance': feature_importance_optimized
-}).sort_values('importance', ascending=False)
-
-print("\n=== Top 20 Feature Importances (Optimized Model) ===")
-print(importance_df_optimized.head(20))
-
-print("\n" + "=" * 80)
-print("IMPROVEMENT SUMMARY")
-print("=" * 80)
-print(f"Previous Macro F1: 0.5237")
-print(f"Optimized Macro F1: {f1_macro_optimized:.4f}")
-print(f"Improvement: {f1_macro_optimized - 0.5237:.4f} ({((f1_macro_optimized - 0.5237) / 0.5237 * 100):.1f}%)")
-print(f"Target F1: 0.85")
-print(f"Gap to target: {0.85 - f1_macro_optimized:.4f}")
-print("=" * 80)
-
-# Store optimized model and predictions for further use
-val_predictions = val_predictions_optimized
-val_probabilities = val_probabilities_optimized
-f1_macro = f1_macro_optimized
-f1_weighted = f1_weighted_optimized
+=== Prediction Distribution ===
+                  True Count  Predicted Count  Difference  Difference %
+INVESTMENT             39543            50353       10810         27.34
+LIFE_INSURANCE         33278            33788         510          1.53
+NETWORK_PRODUCTS        8001             2111       -5890        -73.62
+OTHER_HEALTH             179               65        -114        -63.69
+RETIREMENT             44288            38972       -5316        -12.00
