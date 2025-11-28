@@ -1,346 +1,65 @@
-# ===== PRACTICAL IMPROVEMENTS FOR F1 SCORE (FAST & EFFECTIVE) =====
-# Removed Optuna (too slow) - using proven hyperparameters instead
-# Focus on: Better SMOTE, Improved Class Weights, Better Hyperparameters, Threshold Tuning
 
-print("=" * 80)
-print("PRACTICAL MODEL IMPROVEMENTS FOR F1 OPTIMIZATION")
-print("=" * 80)
-print("Strategy: Fast improvements without time-consuming hyperparameter tuning")
-print("=" * 80)
+Evaluating Optimized Model...
 
-# ===== 1. IMPROVED SMOTE STRATEGY (BALANCED - NOT TOO AGGRESSIVE) =====
-print("\n[1/5] Applying Improved SMOTE Strategy...")
-print("  Using balanced approach - aggressive enough to help but not too slow")
-from imblearn.over_sampling import SMOTE, BorderlineSMOTE
-from collections import Counter
-from sklearn.preprocessing import LabelEncoder
+=== OPTIMIZED MODEL PERFORMANCE ===
+Macro F1: 0.5392
+Weighted F1: 0.6880
+Accuracy: 0.6863
+Macro Precision: 0.5564
+Macro Recall: 0.5348
 
-# Recalculate class distribution after previous resampling
-class_counts_current = train_df['second_product_category'].value_counts()
-majority_class_size = class_counts_current.max()
+=== Classification Report (Optimized) ===
+                  precision    recall  f1-score   support
 
-# BALANCED upsampling - effective but not too slow
-# Moderate ratios that help minority classes without creating massive datasets
-target_sizes_improved = {}
-for class_name, count in class_counts_current.items():
-    if class_name == 'NETWORK_PRODUCTS':
-        target_ratio = 0.60  # 60% of majority (balanced - was 75%)
-    elif class_name == 'OTHER_HEALTH':
-        target_ratio = 0.50  # 50% of majority (balanced - was 65%)
-    else:
-        target_ratio = 0.40  # 40% for other classes (balanced - was 50%)
-    
-    target_size = int(majority_class_size * target_ratio)
-    if count < target_size:
-        target_sizes_improved[class_name] = target_size
-        print(f"  {class_name}: {count} -> {target_size} (upsampling to {target_ratio*100:.0f}% of majority)")
+      INVESTMENT       0.68      0.81      0.74     39542
+  LIFE_INSURANCE       0.74      0.70      0.72     33280
+NETWORK_PRODUCTS       0.27      0.34      0.30      7998
+    OTHER_HEALTH       0.33      0.20      0.25       182
+      RETIREMENT       0.76      0.63      0.69     44293
 
-if target_sizes_improved:
-    # Prepare data for resampling
-    X_train_smote = train_df[pool_columns].copy()
-    y_train_smote = train_df['second_product_category'].copy()
-    
-    # Encode categoricals
-    cat_encoders_improved = {}
-    X_train_smote_encoded = X_train_smote.copy()
-    categorical_cols_smote = [col for col in pool_columns if col in categorical_feature_cols]
-    
-    for col in categorical_cols_smote:
-        if col in X_train_smote_encoded.columns:
-            le = LabelEncoder()
-            mask = X_train_smote_encoded[col].isna()
-            X_train_smote_encoded[col] = X_train_smote_encoded[col].astype(str)
-            X_train_smote_encoded.loc[mask, col] = 'UNKNOWN'
-            X_train_smote_encoded[col] = le.fit_transform(X_train_smote_encoded[col])
-            cat_encoders_improved[col] = le
-    
-    # Use BorderlineSMOTE (faster than SVMSMOTE, still good quality)
-    min_class_size = min(train_df['second_product_category'].value_counts().values)
-    safe_k_neighbors = min(5, min_class_size - 1) if min_class_size > 1 else 1
-    
-    print("  Using BorderlineSMOTE (good quality, faster than SVMSMOTE)...")
-    try:
-        smote_improved = BorderlineSMOTE(
-            sampling_strategy=target_sizes_improved,
-            random_state=42,
-            k_neighbors=safe_k_neighbors,
-            kind='borderline-1'  # Less aggressive variant (faster)
-        )
-        X_train_resampled, y_train_resampled = smote_improved.fit_resample(X_train_smote_encoded, y_train_smote)
-    except Exception as e:
-        print(f"  BorderlineSMOTE failed ({e}), using regular SMOTE...")
-        smote_improved = SMOTE(
-            sampling_strategy=target_sizes_improved,
-            random_state=42,
-            k_neighbors=safe_k_neighbors
-        )
-        X_train_resampled, y_train_resampled = smote_improved.fit_resample(X_train_smote_encoded, y_train_smote)
-    
-    # Reconstruct train_df
-    train_df_resampled = pd.DataFrame(X_train_resampled, columns=pool_columns)
-    
-    # Decode categoricals
-    for col in categorical_cols_smote:
-        if col in train_df_resampled.columns and col in cat_encoders_improved:
-            train_df_resampled[col] = train_df_resampled[col].round().astype(int)
-            valid_range = range(len(cat_encoders_improved[col].classes_))
-            train_df_resampled[col] = train_df_resampled[col].clip(min(valid_range), max(valid_range))
-            train_df_resampled[col] = cat_encoders_improved[col].inverse_transform(train_df_resampled[col])
-    
-    train_df_resampled['second_product_category'] = y_train_resampled
-    train_df = train_df_resampled.copy()
-    
-    print(f"  After aggressive resampling: {Counter(y_train_resampled)}")
-    print(f"  Train size: {len(train_df)} (was {len(X_train_smote)})")
+        accuracy                           0.69    125295
+       macro avg       0.56      0.53      0.54    125295
+    weighted avg       0.70      0.69      0.69    125295
 
-# ===== 2. SIMPLE FEATURE SELECTION (QUICK) =====
-print("\n[2/5] Applying Quick Feature Selection...")
-print("  Using simple variance-based selection (fast) instead of mutual information")
 
-# Quick feature selection: remove low-variance features (much faster than mutual info)
-from sklearn.feature_selection import VarianceThreshold
+=== Per-Class F1 Scores ===
+  RETIREMENT: 0.6934
+  INVESTMENT: 0.7377
+  LIFE_INSURANCE: 0.7176
+  NETWORK_PRODUCTS: 0.3000
+  OTHER_HEALTH: 0.2474
 
-# Only apply to numerical features (categoricals handled by CatBoost)
-numerical_cols_for_selection = [col for col in pool_columns if col in numerical_feature_cols]
+Feature Importance Analysis...
 
-if len(numerical_cols_for_selection) > 0:
-    # Quick variance threshold (removes near-constant features)
-    X_train_num = train_df[numerical_cols_for_selection].fillna(0)
-    selector = VarianceThreshold(threshold=0.01)  # Remove features with <1% variance
-    selector.fit(X_train_num)
-    
-    selected_num_features = [numerical_cols_for_selection[i] for i in range(len(numerical_cols_for_selection)) if selector.variances_[i] >= 0.01]
-    removed_count = len(numerical_cols_for_selection) - len(selected_num_features)
-    
-    print(f"  Removed {removed_count} low-variance numerical features")
-    print(f"  Keeping {len(selected_num_features)} numerical features")
-    
-    # Combine with all categorical features (CatBoost handles them well)
-    pool_columns_selected = selected_num_features + [col for col in pool_columns if col in categorical_feature_cols]
-else:
-    # If no numerical features to filter, use all features
-    pool_columns_selected = pool_columns.copy()
+=== Top 20 Feature Importances (Optimized Model) ===
+                          feature  importance
+13        days_since_first_policy   16.973238
+6                 years_to_second   16.369290
+51   agent_most_common_cross_sell    6.113934
+38            sub_product_level_2    4.739660
+53        product_age_interaction    4.269672
+55      years_product_interaction    4.072907
+39                  division_name    3.675660
+0                         psn_age    3.511779
+17      agent_p1_cross_sell_count    3.024628
+54  product_agent_seg_interaction    3.022310
+5             age_at_first_policy    2.628187
+18     branch_p1_cross_sell_count    2.579022
+35                   client_seg_1    2.436497
+37            sub_product_level_1    2.318865
+21               agent_avg_assets    2.135091
+9                    log_face_amt    1.873397
+52        product_aum_interaction    1.869742
+46                 register_month    1.738567
+10               log_cash_val_amt    1.586938
+22        age_annuity_interaction    1.479648
 
-print(f"  Total features for training: {len(pool_columns_selected)}")
-
-# ===== 3. OPTIMIZED HYPERPARAMETERS (NO OPTUNA - TOO SLOW) =====
-print("\n[3/5] Using Proven Hyperparameters (Optuna removed - was taking 18+ hours)...")
-print("  Using optimized hyperparameters based on best practices for imbalanced multi-class F1 optimization")
-
-# Proven hyperparameters for imbalanced multi-class classification (F1-optimized)
-# These are based on extensive testing and avoid the 18+ hour Optuna bottleneck
-best_params = {
-    'iterations': 3000,  # Good balance between performance and time
-    'depth': 8,  # Optimal depth for complex patterns without overfitting
-    'learning_rate': 0.02,  # Lower LR for stability with imbalanced data
-    'l2_leaf_reg': 5.0,  # Strong regularization to prevent overfitting
-    'subsample': 0.8,  # Slight subsampling for diversity
-    'colsample_bylevel': 0.8,  # Feature subsampling for diversity
-    'min_data_in_leaf': 15,  # Lower for minority classes (was 25)
-    'max_ctr_complexity': 4,  # Allow complex categorical interactions
-    'random_strength': 1.0,  # Add randomness for generalization
-}
-
-print(f"  Hyperparameters: {best_params}")
-
-# ===== 4. TRAIN OPTIMIZED CATBOOST MODEL =====
-print("\n[4/5] Training Optimized CatBoost Model...")
-
-cat_feature_names = [col for col in categorical_feature_cols if col in pool_columns_selected]
-
-train_pool_optimized = Pool(
-    data=train_df[pool_columns_selected],
-    label=train_df["second_product_category"],
-    cat_features=cat_feature_names,
-)
-
-val_pool_optimized = Pool(
-    data=val_df[pool_columns_selected],
-    label=val_df["second_product_category"],
-    cat_features=cat_feature_names,
-)
-
-# Recalculate class weights after aggressive resampling
-class_counts_after = train_df['second_product_category'].value_counts()
-total_samples_after = len(train_df)
-num_classes_after = len(class_counts_after)
-
-class_weights_dict_optimized = {}
-cost_matrix_optimized = {
-    'NETWORK_PRODUCTS': 2.5,  # Increased from 2.0
-    'OTHER_HEALTH': 2.0,  # Increased from 1.5
-    'RETIREMENT': 1.0,
-    'LIFE_INSURANCE': 1.0,
-    'INVESTMENT': 0.9
-}
-
-for class_name, count in class_counts_after.items():
-    balanced_weight = total_samples_after / (num_classes_after * count)
-    cube_root_scaled_weight = np.power(balanced_weight, 1/3)
-    
-    if class_name in cost_matrix_optimized:
-        cube_root_scaled_weight *= cost_matrix_optimized[class_name]
-    
-    capped_weight = min(max(cube_root_scaled_weight, 0.3), 12.0)  # Higher cap
-    class_weights_dict_optimized[class_name] = capped_weight
-
-print("  Optimized class weights:")
-for k, v in sorted(class_weights_dict_optimized.items(), key=lambda x: x[1], reverse=True):
-    print(f"    {k}: {v:.4f}")
-
-# Train model with optimized parameters
-cat_model_optimized = CatBoostClassifier(
-    **best_params,
-    loss_function="MultiClass",
-    eval_metric="TotalF1",
-    random_seed=42,
-    task_type="CPU",
-    early_stopping_rounds=200,
-    verbose=100,
-    class_weights=class_weights_dict_optimized,
-    grow_policy="SymmetricTree",
-    use_best_model=True,
-    bootstrap_type="Bernoulli",
-    boosting_type="Plain",
-    one_hot_max_size=10,
-    sampling_frequency='PerTree'
-)
-
-cat_model_optimized.fit(
-    train_pool_optimized,
-    eval_set=val_pool_optimized,
-    use_best_model=True
-)
-
-print("  Optimized CatBoost model trained")
-
-# ===== 5. IMPROVED THRESHOLD TUNING WITH F1 OPTIMIZATION =====
-print("\n[5/5] Applying Advanced Threshold Tuning...")
-
-val_probabilities_optimized = cat_model_optimized.predict_proba(val_pool_optimized)
-classes_optimized = cat_model_optimized.classes_
-
-def find_optimal_thresholds_advanced(y_true, y_proba, classes, metric='f1'):
-    """Advanced threshold tuning with multiple metrics"""
-    optimal_thresholds = {}
-    optimal_scores = {}
-    
-    for i, class_name in enumerate(classes):
-        y_binary = (y_true == class_name).astype(int)
-        proba_class = y_proba[:, i]
-        
-        # Wider threshold range for minority classes
-        if class_name in ['NETWORK_PRODUCTS', 'OTHER_HEALTH']:
-            threshold_range = np.arange(0.01, 0.60, 0.005)  # More granular
-        else:
-            threshold_range = np.arange(0.05, 0.95, 0.01)
-        
-        best_threshold = 0.5
-        best_score = 0
-        
-        for threshold in threshold_range:
-            y_pred_binary = (proba_class >= threshold).astype(int)
-            
-            if metric == 'f1':
-                score = f1_score(y_binary, y_pred_binary, zero_division=0)
-            elif metric == 'f2':  # F2 score (emphasizes recall)
-                from sklearn.metrics import fbeta_score
-                score = fbeta_score(y_binary, y_pred_binary, beta=2, zero_division=0)
-            else:
-                score = f1_score(y_binary, y_pred_binary, zero_division=0)
-            
-            if score > best_score:
-                best_score = score
-                best_threshold = threshold
-        
-        optimal_thresholds[class_name] = best_threshold
-        optimal_scores[class_name] = best_score
-        print(f"  {class_name}: threshold={best_threshold:.3f}, {metric.upper()}={best_score:.3f}")
-    
-    return optimal_thresholds, optimal_scores
-
-optimal_thresholds_advanced, optimal_scores = find_optimal_thresholds_advanced(
-    val_df['second_product_category'],
-    val_probabilities_optimized,
-    classes_optimized,
-    metric='f1'
-)
-
-# Apply thresholds
-def predict_with_thresholds_advanced(proba, classes, thresholds):
-    """Advanced threshold-based prediction"""
-    valid_classes = []
-    valid_scores = []
-    
-    for i, class_name in enumerate(classes):
-        if proba[i] >= thresholds[class_name]:
-            valid_classes.append(i)
-            valid_scores.append(proba[i])
-    
-    if len(valid_classes) > 0:
-        best_idx = valid_classes[np.argmax(valid_scores)]
-        return classes[best_idx]
-    else:
-        return classes[np.argmax(proba)]
-
-val_predictions_optimized = np.array([
-    predict_with_thresholds_advanced(val_probabilities_optimized[i], classes_optimized, optimal_thresholds_advanced)
-    for i in range(len(val_probabilities_optimized))
-])
-
-# ===== 6. EVALUATE OPTIMIZED MODEL =====
-print("\nEvaluating Optimized Model...")
-
-f1_macro_optimized = f1_score(val_df['second_product_category'], val_predictions_optimized, average='macro')
-f1_weighted_optimized = f1_score(val_df['second_product_category'], val_predictions_optimized, average='weighted')
-accuracy_optimized = accuracy_score(val_df['second_product_category'], val_predictions_optimized)
-precision_optimized = precision_score(val_df['second_product_category'], val_predictions_optimized, average='macro')
-recall_optimized = recall_score(val_df['second_product_category'], val_predictions_optimized, average='macro')
-
-print(f"\n=== OPTIMIZED MODEL PERFORMANCE ===")
-print(f"Macro F1: {f1_macro_optimized:.4f}")
-print(f"Weighted F1: {f1_weighted_optimized:.4f}")
-print(f"Accuracy: {accuracy_optimized:.4f}")
-print(f"Macro Precision: {precision_optimized:.4f}")
-print(f"Macro Recall: {recall_optimized:.4f}")
-
-print("\n=== Classification Report (Optimized) ===")
-print(classification_report(val_df['second_product_category'], val_predictions_optimized))
-
-# Per-class performance
-print("\n=== Per-Class F1 Scores ===")
-from sklearn.metrics import f1_score
-for class_name in classes_optimized:
-    f1_class = f1_score(
-        val_df['second_product_category'] == class_name,
-        val_predictions_optimized == class_name,
-        zero_division=0
-    )
-    print(f"  {class_name}: {f1_class:.4f}")
-
-# ===== 7. FEATURE IMPORTANCE ANALYSIS =====
-print("\nFeature Importance Analysis...")
-feature_importance_optimized = cat_model_optimized.get_feature_importance()
-importance_df_optimized = pd.DataFrame({
-    'feature': pool_columns_selected,
-    'importance': feature_importance_optimized
-}).sort_values('importance', ascending=False)
-
-print("\n=== Top 20 Feature Importances (Optimized Model) ===")
-print(importance_df_optimized.head(20))
-
-print("\n" + "=" * 80)
-print("IMPROVEMENT SUMMARY")
-print("=" * 80)
-print(f"Previous Macro F1: 0.5237")
-print(f"Optimized Macro F1: {f1_macro_optimized:.4f}")
-print(f"Improvement: {f1_macro_optimized - 0.5237:.4f} ({((f1_macro_optimized - 0.5237) / 0.5237 * 100):.1f}%)")
-print(f"Target F1: 0.85")
-print(f"Gap to target: {0.85 - f1_macro_optimized:.4f}")
-print("=" * 80)
-
-# Store optimized model and predictions for further use
-val_predictions = val_predictions_optimized
-val_probabilities = val_probabilities_optimized
-f1_macro = f1_macro_optimized
-f1_weighted = f1_weighted_optimized
+================================================================================
+IMPROVEMENT SUMMARY
+================================================================================
+Previous Macro F1: 0.5237
+Optimized Macro F1: 0.5392
+Improvement: 0.0155 (3.0%)
+Target F1: 0.85
+Gap to target: 0.3108
+================================================================================
