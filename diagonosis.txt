@@ -271,3 +271,34 @@ Index(['axa_party_id', 'policy_no', 'register_date', 'trmn_eff_date',
        'product_category', 'second_product_category', 'season_of_first_policy',
        'age_at_first_policy', 'age_at_second_policy', 'years_to_second'],
       dtype='object')
+
+
+
+Fold 5 macro F1 (ensemble on val): 0.6966
+
+OOF Macro F1: 0.6959700190546122
+
+Per-class report:
+                  precision    recall  f1-score   support
+
+      DISABILITY       0.90      0.77      0.83      2271
+          HEALTH       0.00      0.02      0.01       125
+      INVESTMENT       0.92      0.98      0.95    594508
+  LIFE_INSURANCE       0.89      0.87      0.88    180002
+NETWORK_PRODUCTS       0.84      0.46      0.59     73618
+      RETIREMENT       0.91      0.92      0.92    243562
+
+        accuracy                           0.91   1094086
+       macro avg       0.75      0.67      0.70   1094086
+    weighted avg       0.91      0.91      0.91   1094086
+
+Confusion matrix (rows=true, cols=pred):
+ [[  1749     20      6     85     47    364]
+ [     7      3     71      4     20     20]
+ [    13    263 583964   6711    807   2750]
+ [    22    184  15423 156139   2326   5908]
+ [    12     80  18983   8987  33658  11898]
+ [   143    187  13848   3105   3125 223154]]
+Saved feature importance.
+
+Done. Output saved to model_output
