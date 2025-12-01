@@ -2,6 +2,143 @@ WITH base AS (
     SELECT
         axa_party_id,
         policy_no,
+        register_date,
+        prod_lob,
+        sub_product_level_1,
+        sub_product_level_2,
+        Product,
+        policy_status
+    FROM policy_table
+    WHERE policy_status = 'ACTIVE'
+),
+ordered AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY axa_party_id ORDER BY register_date ASC) AS rn
+    FROM base
+),
+pairs AS (
+    SELECT
+        a.axa_party_id,
+        a.policy_no AS first_policy_no,
+        a.register_date AS first_register_date,
+        a.prod_lob AS first_prod_lob,
+        a.sub_product_level_1 AS first_sub_product_level_1,
+        a.sub_product_level_2 AS first_sub_product_level_2,
+        a.Product AS first_Product,
+
+        b.policy_no AS second_policy_no,
+        b.register_date AS second_register_date,
+        b.prod_lob AS second_prod_lob,
+        b.sub_product_level_1 AS second_sub_product_level_1,
+        b.sub_product_level_2 AS second_sub_product_level_2,
+        b.Product AS second_Product
+
+    FROM ordered a
+    JOIN ordered b
+      ON a.axa_party_id = b.axa_party_id
+     AND b.rn = a.rn + 1
+)
+
+SELECT
+    axa_party_id,
+    first_policy_no,
+    second_policy_no,
+    first_register_date,
+    second_register_date,
+
+    ---------------------------------------------------------
+    -- CLASSIFY FIRST POLICY
+    ---------------------------------------------------------
+    CASE 
+        WHEN first_prod_lob = 'LIFE' THEN 'LIFE_INSURANCE'
+        WHEN first_sub_product_level_1 IN ('VLI', 'WL', 'UL/IUL', 'TERM', 'PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+        WHEN first_sub_product_level_2 LIKE '%LIFE%' THEN 'LIFE_INSURANCE'
+        WHEN first_sub_product_level_2 IN ('VARIABLE UNIVERSAL LIFE', 'WHOLE LIFE', 'UNIVERSAL LIFE', 
+                                           'INDEX UNIVERSAL LIFE', 'TERM PRODUCT', 'VARIABLE LIFE', 
+                                           'SURVIVORSHIP WHOLE LIFE', 'MONY PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+        WHEN first_prod_lob IN ('GROUP RETIREMENT', 'INDIVIDUAL RETIREMENT') THEN 'RETIREMENT'
+        WHEN first_sub_product_level_1 IN ('EQUIVEST', 'RETIREMENT 401K', 'ACCUMULATOR', 
+                                           'RETIREMENT CORNERSTONE', 'SCS', 'INVESTMENT EDGE') THEN 'RETIREMENT'
+        WHEN first_sub_product_level_2 LIKE '%403B%' OR first_sub_product_level_2 LIKE '%401%' 
+             OR first_sub_product_level_2 LIKE '%IRA%' OR first_sub_product_level_2 LIKE '%SEP%' THEN 'RETIREMENT'
+        WHEN first_Product LIKE '%IRA%' OR first_Product LIKE '%401%' OR first_Product LIKE '%403%' 
+             OR first_Product LIKE '%SEP%' OR first_Product LIKE '%Accumulator%' 
+             OR first_Product LIKE '%Retirement%' THEN 'RETIREMENT'
+        WHEN first_prod_lob = 'BROKER DEALER' THEN 'INVESTMENT'
+        WHEN first_sub_product_level_1 IN ('INVESTMENT PRODUCT - DIRECT', 'INVESTMENT PRODUCT - BROKERAGE', 
+                                           'INVESTMENT PRODUCT - ADVISORY', 'DIRECT', 'BROKERAGE', 
+                                           'ADVISORY', 'CASH SOLICITOR') THEN 'INVESTMENT'
+        WHEN first_sub_product_level_2 LIKE '%Investment%' OR first_sub_product_level_2 LIKE '%Brokerage%' 
+             OR first_sub_product_level_2 LIKE '%Advisory%' THEN 'INVESTMENT'
+        WHEN first_prod_lob = 'NETWORK' THEN 'NETWORK_PRODUCTS'
+        WHEN first_sub_product_level_1 = 'NETWORK PRODUCTS' OR first_sub_product_level_2 = 'NETWORK PRODUCTS' THEN 'NETWORK_PRODUCTS'
+        WHEN first_Product LIKE '%Network%' THEN 'NETWORK_PRODUCTS'
+        WHEN first_prod_lob = 'OTHERS' AND first_sub_product_level_1 = 'HAS' THEN 'DISABILITY'
+        WHEN first_sub_product_level_2 = 'HAS - DISABILITY' THEN 'DISABILITY'
+        WHEN first_Product LIKE '%Disability%' OR first_Product LIKE '%DI -%' THEN 'DISABILITY'
+        WHEN first_prod_lob = 'OTHERS' THEN 'HEALTH'
+        WHEN first_sub_product_level_2 = 'GROUP HEALTH PRODUCTS' THEN 'HEALTH'
+        WHEN first_Product LIKE '%Health%' OR first_Product LIKE '%Medical%' OR first_Product LIKE '%Hospital%' THEN 'HEALTH'
+        ELSE 'OTHER'
+    END AS first_product_category,
+
+    ---------------------------------------------------------
+    -- CLASSIFY SECOND POLICY
+    ---------------------------------------------------------
+    CASE 
+        WHEN second_prod_lob IS NULL THEN NULL
+        WHEN second_prod_lob = 'LIFE' THEN 'LIFE_INSURANCE'
+        WHEN second_sub_product_level_1 IN ('VLI', 'WL', 'UL/IUL', 'TERM', 'PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+        WHEN second_sub_product_level_2 LIKE '%LIFE%' THEN 'LIFE_INSURANCE'
+        WHEN second_sub_product_level_2 IN ('VARIABLE UNIVERSAL LIFE', 'WHOLE LIFE', 'UNIVERSAL LIFE', 
+                                            'INDEX UNIVERSAL LIFE', 'TERM PRODUCT', 'VARIABLE LIFE', 
+                                            'SURVIVORSHIP WHOLE LIFE', 'MONY PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+        WHEN second_prod_lob IN ('GROUP RETIREMENT', 'INDIVIDUAL RETIREMENT') THEN 'RETIREMENT'
+        WHEN second_sub_product_level_1 IN ('EQUIVEST', 'RETIREMENT 401K', 'ACCUMULATOR', 
+                                            'RETIREMENT CORNERSTONE', 'SCS', 'INVESTMENT EDGE') THEN 'RETIREMENT'
+        WHEN second_sub_product_level_2 LIKE '%403B%' OR second_sub_product_level_2 LIKE '%401%' 
+             OR second_sub_product_level_2 LIKE '%IRA%' OR second_sub_product_level_2 LIKE '%SEP%' THEN 'RETIREMENT'
+        WHEN second_Product LIKE '%IRA%' OR second_Product LIKE '%401%' OR second_Product LIKE '%403%' 
+             OR second_Product LIKE '%SEP%' OR second_Product LIKE '%Accumulator%' 
+             OR second_Product LIKE '%Retirement%' THEN 'RETIREMENT'
+        WHEN second_prod_lob = 'BROKER DEALER' THEN 'INVESTMENT'
+        WHEN second_sub_product_level_1 IN ('INVESTMENT PRODUCT - DIRECT', 'INVESTMENT PRODUCT - BROKERAGE', 
+                                            'INVESTMENT PRODUCT - ADVISORY', 'DIRECT', 'BROKERAGE', 
+                                            'ADVISORY', 'CASH SOLICITOR') THEN 'INVESTMENT'
+        WHEN second_sub_product_level_2 LIKE '%Investment%' OR second_sub_product_level_2 LIKE '%Brokerage%' 
+             OR second_sub_product_level_2 LIKE '%Advisory%' THEN 'INVESTMENT'
+        WHEN second_prod_lob = 'NETWORK' THEN 'NETWORK_PRODUCTS'
+        WHEN second_sub_product_level_1 = 'NETWORK PRODUCTS' OR second_sub_product_level_2 = 'NETWORK PRODUCTS' THEN 'NETWORK_PRODUCTS'
+        WHEN second_Product LIKE '%Network%' THEN 'NETWORK_PRODUCTS'
+        WHEN second_prod_lob = 'OTHERS' AND second_sub_product_level_1 = 'HAS' THEN 'DISABILITY'
+        WHEN second_sub_product_level_2 = 'HAS - DISABILITY' THEN 'DISABILITY'
+        WHEN second_Product LIKE '%Disability%' OR second_Product LIKE '%DI -%' THEN 'DISABILITY'
+        WHEN second_prod_lob = 'OTHERS' THEN 'HEALTH'
+        WHEN second_sub_product_level_2 = 'GROUP HEALTH PRODUCTS' THEN 'HEALTH'
+        WHEN second_Product LIKE '%Health%' OR second_Product LIKE '%Medical%' OR second_Product LIKE '%Hospital%' THEN 'HEALTH'
+        ELSE 'OTHER'
+    END AS second_product_category,
+
+    ---------------------------------------------------------
+    -- Quarter of first purchase
+    ---------------------------------------------------------
+    CASE
+        WHEN MONTH(first_register_date) BETWEEN 1 AND 3 THEN 'Q1'
+        WHEN MONTH(first_register_date) BETWEEN 4 AND 6 THEN 'Q2'
+        WHEN MONTH(first_register_date) BETWEEN 7 AND 9 THEN 'Q3'
+        WHEN MONTH(first_register_date) BETWEEN 10 AND 12 THEN 'Q4'
+        ELSE 'Unknown'
+    END AS season_of_first_policy
+
+FROM pairs
+WHERE second_prod_lob IS NOT NULL;
+-------------------------------------------------------
+
+WITH base AS (
+    SELECT
+        axa_party_id,
+        policy_no,
         product_category,
         register_date,
         business_month
