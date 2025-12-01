@@ -190,3 +190,64 @@ NETWORK_PRODUCTS       DISABILITY      13 0.000050
  'label_count_p90': 419034,
  'label_count_p95': 506771,
  'label_count_p99': 576961}
+
+
+{'n_total_rows': 3856874,
+ 'n_rows_with_target': 1094096,
+ 'train_rows': 875276,
+ 'test_rows': 218820,
+ 'baseline_mf_recall@1_3_5': [0.8045334064527923,
+  0.8045334064527923,
+  0.8045334064527923],
+ 'baseline_markov_recall@1_3_5': [0.8221232062882735,
+  0.9840828077872223,
+  0.999963440270542],
+ 'lgb_recall@1_3_5': [0.8808472717301892,
+  0.9885750845443744,
+  0.9999360204734485],
+ 'labels': ['DISABILITY',
+  'HEALTH',
+  'INVESTMENT',
+  'LIFE_INSURANCE',
+  'NETWORK_PRODUCTS',
+  'RETIREMENT']}
+
+
+LightGBM eval recall@1/3/5: 0.8808472717301892 0.9885750845443744 0.9999360204734485
+Saved feature importance to feature_importance.csv
+                     feature         gain
+       bond_allocation_ratio 3.365695e+08
+         age_at_first_policy 2.632489e+08
+    annuity_allocation_ratio 2.342210e+08
+      stock_allocation_ratio 1.383051e+08
+                    face_amt 1.066928e+08
+mutual_fund_allocation_ratio 7.744850e+07
+                cash_val_amt 7.290774e+07
+                acct_val_amt 7.033437e+07
+          aum_to_asset_ratio 6.324651e+07
+policy_value_to_assets_ratio 5.809265e+07
+               policy_status 2.058069e+07
+               agent_segment 6.581382e+06
+            product_category 3.025361e+06
+                      agt_no 1.742217e+06
+                    prod_lob 1.092982e+06
+         sub_product_level_2 7.534656e+05
+           branchoffice_code 7.192593e+05
+         sub_product_level_1 5.244361e+05
+                client_seg_1 1.947956e+05
+                     psn_age 1.466313e+05
+                  client_seg 6.067504e+04
+               mkt_prod_hier 2.855813e+04
+                    aum_band 3.645347e+03
+               division_name 1.638106e+03
+                     channel 5.253222e+02
+      season_of_first_policy 2.337055e+01
+              business_month 0.000000e+00
+Saved model predictions to lgb_test_predictions.csv
+Saved modeling_report.json
+DONE.
+ 2) diagnostic_report.json contents (or paste key fields below).
+ 3) First 20 rows of diagnostic_sample_rows.csv (or attach the file).
+ 4) diagnostic_label_counts.csv top 50 rows (if available).
+
+Once you paste those, I'll run the targeted diagnosis and give a prioritized experiment plan.
