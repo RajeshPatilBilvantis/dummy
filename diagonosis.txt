@@ -1,3 +1,68 @@
+WITH base AS (
+    SELECT
+        axa_party_id,
+        policy_no,
+        product_category,
+        register_date,
+        business_month
+    FROM policy_table           -- <=== replace with your table name
+    WHERE policy_status = 'ACTIVE'   -- optional: keep if inactive policies must be removed
+),
+ordered AS (
+    SELECT
+        axa_party_id,
+        policy_no,
+        product_category,
+        register_date,
+        ROW_NUMBER() OVER (PARTITION BY axa_party_id ORDER BY register_date ASC) AS rn
+    FROM base
+),
+pairs AS (
+    SELECT
+        a.axa_party_id,
+        a.product_category AS first_product,
+        b.product_category AS next_product,
+        a.register_date AS first_register_date,
+        b.register_date AS second_register_date
+    FROM ordered a
+    JOIN ordered b
+        ON a.axa_party_id = b.axa_party_id
+       AND b.rn = a.rn + 1     -- strictly next policy in time
+)
+SELECT *
+FROM pairs
+WHERE next_product IS NOT NULL;
+
+
+-------------------------------
+
+WITH base AS (
+    SELECT
+        axa_party_id,
+        product_category,
+        register_date
+    FROM policy_table            -- <=== replace with your table name
+    WHERE policy_status = 'ACTIVE'
+),
+ordered AS (
+    SELECT
+        axa_party_id,
+        product_category,
+        register_date,
+        ROW_NUMBER() OVER (PARTITION BY axa_party_id ORDER BY register_date ASC) AS rn,
+        COUNT(*) OVER (PARTITION BY axa_party_id) AS total_active_policies
+    FROM base
+)
+SELECT
+    axa_party_id,
+    product_category AS current_product,
+    register_date AS register_date_of_current
+FROM ordered
+WHERE total_active_policies = 1   -- customers with exactly 1 active policy
+  AND rn = 1;                     -- their only policy
+----------------------------------------
+
+
 %sql
 with base as (
   select 
