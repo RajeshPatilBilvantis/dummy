@@ -301,4 +301,35 @@ Confusion matrix (rows=true, cols=pred):
  [   143    187  13848   3105   3125 223154]]
 Saved feature importance.
 
+
+
+
+Evaluating ranking performance (top-1)...
+Ranking model macro F1 (top-1): 0.5468981480468839
+
+Classification report (ranking top-1):
+                  precision    recall  f1-score   support
+
+      DISABILITY       0.40      0.30      0.34      2271
+          HEALTH       1.00      0.62      0.77       125
+      INVESTMENT       0.77      0.77      0.77    594508
+  LIFE_INSURANCE       0.53      0.55      0.54    180002
+NETWORK_PRODUCTS       0.57      0.19      0.29     73618
+      RETIREMENT       0.53      0.62      0.57    243562
+
+        accuracy                           0.66   1094086
+       macro avg       0.63      0.51      0.55   1094086
+    weighted avg       0.66      0.66      0.65   1094086
+
+Confusion matrix (rows=true, cols=pred):
+                  DISABILITY  HEALTH  ...  NETWORK_PRODUCTS  RETIREMENT
+DISABILITY               684       0  ...                21         354
+HEALTH                     0      78  ...                 9           4
+INVESTMENT               118       0  ...             10280       84520
+LIFE_INSURANCE           558       0  ...               295       34098
+NETWORK_PRODUCTS         201       0  ...             14302       15640
+RETIREMENT               134       0  ...               238      151928
+
+[6 rows x 6 columns]
+
 Done. Output saved to model_output
