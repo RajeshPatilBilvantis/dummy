@@ -1,3 +1,186 @@
+%sql
+with base as (
+  select 
+    r.axa_party_id,
+    r.policy_no,
+    r.register_date,
+    r.trmn_eff_date,
+    r.wti_lob_txt,
+    r.prod_lob,
+    r.agt_class,
+    r.isrd_brth_date,
+    r.psn_age,
+    r.acct_val_amt,
+    r.face_amt,
+    r.cash_val_amt,
+    r.wc_total_assets,
+    r.wc_assetmix_stocks,
+    r.wc_assetmix_bonds,
+    r.wc_assetmix_mutual_funds,
+    r.wc_assetmix_annuity,
+    r.wc_assetmix_deposits,
+    r.wc_assetmix_other_assets,
+    r.division_name,
+    r.mkt_prod_hier,
+    r.policy_status,
+    r.agent_segment,
+    r.channel,
+    r.client_seg,
+    r.client_seg_1,
+    r.aum_band,
+    r.business_month,
+    r.branchoffice_code,
+    r.agt_no,
+    h.sub_product_level_1,
+    h.sub_product_level_2,
+    h.Product,
+    row_number() over (partition by r.axa_party_id order by r.register_date asc) as rn,
+    row_number() over (partition by r.axa_party_id order by r.register_date asc) = 1 as is_first_policy
+  from dl_tenants_daas.us_wealth_management.wealth_management_client_metrics r
+  left join (
+    select distinct source_sys_id, idb_plan_cd, idb_sub_plan_cd, 
+      trim(stmt_plan_typ_txt) as Product, sub_product_level_1, sub_product_level_2
+    from dl_tenants_daas.us_wealth_management.wealth_management_sub_product_group
+  ) h 
+    on upper(r.source_sys_id) = upper(h.source_sys_id)
+    and trim(upper(REPLACE(LTRIM(REPLACE(r.plan_code,'0',' ')),' ','0'))) = trim(upper(h.idb_plan_cd))
+    and trim(upper(REPLACE(LTRIM(REPLACE(r.plan_subcd_code,'0',' ')),' ','0'))) = trim(upper(h.idb_sub_plan_cd))
+  where r.business_month = (select max(business_month) from dl_tenants_daas.us_wealth_management.wealth_management_client_metrics)
+    and r.axa_party_id is not null
+    and r.policy_no is not null
+),
+first_second as (
+  select
+    axa_party_id,
+    -- First policy fields
+    max(case when rn = 1 then policy_no end) as policy_no,
+    max(case when rn = 1 then register_date end) as register_date,
+    max(case when rn = 1 then trmn_eff_date end) as trmn_eff_date,
+    max(case when rn = 1 then wti_lob_txt end) as wti_lob_txt,
+    max(case when rn = 1 then prod_lob end) as prod_lob,
+    max(case when rn = 1 then agt_class end) as agt_class,
+    max(case when rn = 1 then isrd_brth_date end) as isrd_brth_date,
+    max(case when rn = 1 then psn_age end) as psn_age,
+    max(case when rn = 1 then acct_val_amt end) as acct_val_amt,
+    max(case when rn = 1 then face_amt end) as face_amt,
+    max(case when rn = 1 then cash_val_amt end) as cash_val_amt,
+    max(case when rn = 1 then wc_total_assets end) as wc_total_assets,
+    max(case when rn = 1 then wc_assetmix_stocks end) as wc_assetmix_stocks,
+    max(case when rn = 1 then wc_assetmix_bonds end) as wc_assetmix_bonds,
+    max(case when rn = 1 then wc_assetmix_mutual_funds end) as wc_assetmix_mutual_funds,
+    max(case when rn = 1 then wc_assetmix_annuity end) as wc_assetmix_annuity,
+    max(case when rn = 1 then wc_assetmix_deposits end) as wc_assetmix_deposits,
+    max(case when rn = 1 then wc_assetmix_other_assets end) as wc_assetmix_other_assets,
+    max(case when rn = 1 then client_seg end) as client_seg,
+    max(case when rn = 1 then client_seg_1 end) as client_seg_1,
+    max(case when rn = 1 then aum_band end) as aum_band,
+    max(case when rn = 1 then sub_product_level_1 end) as sub_product_level_1,
+    max(case when rn = 1 then sub_product_level_2 end) as sub_product_level_2,
+    max(case when rn = 1 then Product end) as Product,
+    max(case when rn = 1 then business_month end) as business_month,
+    max(case when rn = 1 then branchoffice_code end) as branchoffice_code,
+    max(case when rn = 1 then agt_no end) as agt_no,
+    max(case when rn = 1 then division_name end) as division_name,
+    max(case when rn = 1 then mkt_prod_hier end) as mkt_prod_hier,
+    max(case when rn = 1 then policy_status end) as policy_status ,
+    max(case when rn = 1 then channel end) as channel,
+    max(case when rn = 1 then agent_segment end) as agent_segment,
+    -- Second policy fields
+    max(case when rn = 2 then policy_no end) as second_policy_no,
+    max(case when rn = 2 then register_date end) as second_register_date,
+    max(case when rn = 2 then trmn_eff_date end) as second_trmn_eff_date,
+    max(case when rn = 2 then wti_lob_txt end) as second_wti_lob_txt,
+    max(case when rn = 2 then prod_lob end) as second_prod_lob,
+    max(case when rn = 2 then sub_product_level_1 end) as second_sub_product_level_1,
+    max(case when rn = 2 then sub_product_level_2 end) as second_sub_product_level_2,
+    max(case when rn = 2 then Product end) as second_Product
+  from base
+  where rn <= 2
+  group by axa_party_id
+)
+select *,
+  wc_assetmix_stocks / NULLIF(wc_total_assets, 0) AS stock_allocation_ratio,
+  wc_assetmix_bonds / NULLIF(wc_total_assets, 0) AS bond_allocation_ratio,
+  wc_assetmix_annuity / NULLIF(wc_total_assets, 0) AS annuity_allocation_ratio,
+  wc_assetmix_mutual_funds / NULLIF(wc_total_assets, 0) AS mutual_fund_allocation_ratio,
+  acct_val_amt / NULLIF(wc_total_assets, 0) AS aum_to_asset_ratio,
+  face_amt / NULLIF(wc_total_assets, 0) AS policy_value_to_assets_ratio,
+  
+  CASE 
+    WHEN prod_lob = 'LIFE' THEN 'LIFE_INSURANCE'
+    WHEN sub_product_level_1 IN ('VLI', 'WL', 'UL/IUL', 'TERM', 'PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+    WHEN sub_product_level_2 LIKE '%LIFE%' THEN 'LIFE_INSURANCE'
+    WHEN sub_product_level_2 IN ('VARIABLE UNIVERSAL LIFE', 'WHOLE LIFE', 'UNIVERSAL LIFE', 
+                                'INDEX UNIVERSAL LIFE', 'TERM PRODUCT', 'VARIABLE LIFE', 
+                                'SURVIVORSHIP WHOLE LIFE', 'MONY PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+    WHEN prod_lob IN ('GROUP RETIREMENT', 'INDIVIDUAL RETIREMENT') THEN 'RETIREMENT'
+    WHEN sub_product_level_1 IN ('EQUIVEST', 'RETIREMENT 401K', 'ACCUMULATOR', 
+                                'RETIREMENT CORNERSTONE', 'SCS', 'INVESTMENT EDGE') THEN 'RETIREMENT'
+    WHEN sub_product_level_2 LIKE '%403B%' OR sub_product_level_2 LIKE '%401%' 
+         OR sub_product_level_2 LIKE '%IRA%' OR sub_product_level_2 LIKE '%SEP%' THEN 'RETIREMENT'
+    WHEN Product LIKE '%IRA%' OR Product LIKE '%401%' OR Product LIKE '%403%' 
+         OR Product LIKE '%SEP%' OR Product LIKE '%Accumulator%' 
+         OR Product LIKE '%Retirement%' THEN 'RETIREMENT'
+    WHEN prod_lob = 'BROKER DEALER' THEN 'INVESTMENT'
+    WHEN sub_product_level_1 IN ('INVESTMENT PRODUCT - DIRECT', 'INVESTMENT PRODUCT - BROKERAGE', 
+                                'INVESTMENT PRODUCT - ADVISORY', 'DIRECT', 'BROKERAGE', 
+                                'ADVISORY', 'CASH SOLICITOR') THEN 'INVESTMENT'
+    WHEN sub_product_level_2 LIKE '%Investment%' OR sub_product_level_2 LIKE '%Brokerage%' 
+         OR sub_product_level_2 LIKE '%Advisory%' THEN 'INVESTMENT'
+    WHEN prod_lob = 'NETWORK' THEN 'NETWORK_PRODUCTS'
+    WHEN sub_product_level_1 = 'NETWORK PRODUCTS' OR sub_product_level_2 = 'NETWORK PRODUCTS' THEN 'NETWORK_PRODUCTS'
+    WHEN Product LIKE '%Network%' THEN 'NETWORK_PRODUCTS'
+    WHEN prod_lob = 'OTHERS' AND sub_product_level_1 = 'HAS' THEN 'DISABILITY'
+    WHEN sub_product_level_2 = 'HAS - DISABILITY' THEN 'DISABILITY'
+    WHEN Product LIKE '%Disability%' OR Product LIKE '%DI -%' THEN 'DISABILITY'
+    WHEN prod_lob = 'OTHERS' THEN 'HEALTH'
+    WHEN sub_product_level_2 = 'GROUP HEALTH PRODUCTS' THEN 'HEALTH'
+    WHEN Product LIKE '%Health%' OR Product LIKE '%Medical%' OR Product LIKE '%Hospital%' THEN 'HEALTH'
+    ELSE 'OTHER'
+  END AS product_category,
+  CASE 
+    WHEN second_prod_lob IS NULL THEN NULL
+    WHEN second_prod_lob = 'LIFE' THEN 'LIFE_INSURANCE'
+    WHEN second_sub_product_level_1 IN ('VLI', 'WL', 'UL/IUL', 'TERM', 'PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+    WHEN second_sub_product_level_2 LIKE '%LIFE%' THEN 'LIFE_INSURANCE'
+    WHEN second_sub_product_level_2 IN ('VARIABLE UNIVERSAL LIFE', 'WHOLE LIFE', 'UNIVERSAL LIFE', 
+                                'INDEX UNIVERSAL LIFE', 'TERM PRODUCT', 'VARIABLE LIFE', 
+                                'SURVIVORSHIP WHOLE LIFE', 'MONY PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+    WHEN second_prod_lob IN ('GROUP RETIREMENT', 'INDIVIDUAL RETIREMENT') THEN 'RETIREMENT'
+    WHEN second_sub_product_level_1 IN ('EQUIVEST', 'RETIREMENT 401K', 'ACCUMULATOR', 
+                                'RETIREMENT CORNERSTONE', 'SCS', 'INVESTMENT EDGE') THEN 'RETIREMENT'
+    WHEN second_sub_product_level_2 LIKE '%403B%' OR second_sub_product_level_2 LIKE '%401%' 
+         OR second_sub_product_level_2 LIKE '%IRA%' OR second_sub_product_level_2 LIKE '%SEP%' THEN 'RETIREMENT'
+    WHEN second_Product LIKE '%IRA%' OR second_Product LIKE '%401%' OR second_Product LIKE '%403%' 
+         OR second_Product LIKE '%SEP%' OR second_Product LIKE '%Accumulator%' 
+         OR second_Product LIKE '%Retirement%' THEN 'RETIREMENT'
+    WHEN second_prod_lob = 'BROKER DEALER' THEN 'INVESTMENT'
+    WHEN second_sub_product_level_1 IN ('INVESTMENT PRODUCT - DIRECT', 'INVESTMENT PRODUCT - BROKERAGE', 
+                                'INVESTMENT PRODUCT - ADVISORY', 'DIRECT', 'BROKERAGE', 
+                                'ADVISORY', 'CASH SOLICITOR') THEN 'INVESTMENT'
+    WHEN second_sub_product_level_2 LIKE '%Investment%' OR second_sub_product_level_2 LIKE '%Brokerage%' 
+         OR second_sub_product_level_2 LIKE '%Advisory%' THEN 'INVESTMENT'
+    WHEN second_prod_lob = 'NETWORK' THEN 'NETWORK_PRODUCTS'
+    WHEN second_sub_product_level_1 = 'NETWORK PRODUCTS' OR second_sub_product_level_2 = 'NETWORK PRODUCTS' THEN 'NETWORK_PRODUCTS'
+    WHEN second_Product LIKE '%Network%' THEN 'NETWORK_PRODUCTS'
+    WHEN second_prod_lob = 'OTHERS' AND second_sub_product_level_1 = 'HAS' THEN 'DISABILITY'
+    WHEN second_sub_product_level_2 = 'HAS - DISABILITY' THEN 'DISABILITY'
+    WHEN second_Product LIKE '%Disability%' OR second_Product LIKE '%DI -%' THEN 'DISABILITY'
+    WHEN second_prod_lob = 'OTHERS' THEN 'HEALTH'
+    WHEN second_sub_product_level_2 = 'GROUP HEALTH PRODUCTS' THEN 'HEALTH'
+    WHEN second_Product LIKE '%Health%' OR second_Product LIKE '%Medical%' OR second_Product LIKE '%Hospital%' THEN 'HEALTH'
+    ELSE 'OTHER'
+  END AS second_product_category,
+  CASE
+    WHEN MONTH(register_date) BETWEEN 1 AND 3 THEN 'Q1'
+    WHEN MONTH(register_date) BETWEEN 4 AND 6 THEN 'Q2'
+    WHEN MONTH(register_date) BETWEEN 7 AND 9 THEN 'Q3'
+    WHEN MONTH(register_date) BETWEEN 10 AND 12 THEN 'Q4'
+    ELSE 'Unknown'
+  END AS season_of_first_policy
+  
+from first_second
+
 Loaded rows: 3856874
 
 Inferred columns (change variables at top if incorrect):
