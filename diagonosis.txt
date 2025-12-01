@@ -1,0 +1,192 @@
+Loaded rows: 3856874
+
+Inferred columns (change variables at top if incorrect):
+ user id column: axa_party_id
+ current product column: product_category
+ next product (label) column: second_product_category
+ timestamp column: register_date
+
+Columns and dtypes:
+axa_party_id                            object
+policy_no                               object
+register_date                   datetime64[ns]
+trmn_eff_date                           object
+wti_lob_txt                             object
+prod_lob                                object
+agt_class                               object
+isrd_brth_date                  datetime64[ns]
+psn_age                                float64
+acct_val_amt                           float32
+face_amt                               float32
+cash_val_amt                           float32
+wc_total_assets                        float64
+wc_assetmix_stocks                     float64
+wc_assetmix_bonds                      float64
+wc_assetmix_mutual_funds               float64
+wc_assetmix_annuity                    float64
+wc_assetmix_deposits                   float64
+wc_assetmix_other_assets               float64
+client_seg                              object
+client_seg_1                            object
+aum_band                                object
+sub_product_level_1                     object
+sub_product_level_2                     object
+Product                                 object
+business_month                           int32
+branchoffice_code                       object
+agt_no                                  object
+division_name                           object
+mkt_prod_hier                           object
+policy_status                           object
+channel                                 object
+agent_segment                           object
+second_policy_no                        object
+second_register_date            datetime64[ns]
+second_trmn_eff_date                    object
+second_wti_lob_txt                      object
+second_prod_lob                         object
+second_sub_product_level_1              object
+second_sub_product_level_2              object
+second_Product                          object
+stock_allocation_ratio                 float64
+bond_allocation_ratio                  float64
+annuity_allocation_ratio               float64
+mutual_fund_allocation_ratio           float64
+aum_to_asset_ratio                     float64
+policy_value_to_assets_ratio           float64
+product_category                        object
+second_product_category                 object
+season_of_first_policy                  object
+age_at_first_policy                    float64
+age_at_second_policy                   float64
+years_to_second                        float64
+dtype: object
+
+
+  
+Saved sample rows to diagnostic_sample_rows.csv (first 10 + 10 random).
+
+Sample rows (displaying key columns if available):
+        axa_party_id register_date product_category second_product_category
+00BK05RY27QPLN0IXXXX    1948-06-28   LIFE_INSURANCE              RETIREMENT
+00BK05RY28AD2G2NXXXX    1952-07-01   LIFE_INSURANCE                    None
+00BK05RY29C6MYNAXXXX    2024-06-28       RETIREMENT                    None
+00BK05RY2BEZ09YCXXXX    1999-12-27 NETWORK_PRODUCTS                    None
+00BK05RY2BNH4IVJXXXX    2004-04-07   LIFE_INSURANCE              RETIREMENT
+00BK05RY2BYCTSHYXXXX    2005-07-11       RETIREMENT                    None
+00BK05RY2CBQQUUQXXXX    2008-04-18 NETWORK_PRODUCTS                    None
+00BK05RY2CGP257OXXXX    2013-11-22   LIFE_INSURANCE                    None
+00BK05RY2CIBYQOTXXXX    1985-03-14   LIFE_INSURANCE                    None
+00BK05RY2CSI4W4OXXXX    1985-10-01   LIFE_INSURANCE                    None
+57BK05RY4MYSOFGCXXXX    2014-06-27       INVESTMENT                    None
+03BK0ZLB8S9RM0L6XXXX    2013-01-25       RETIREMENT                    None
+20248ac7230498707bc4    2025-05-08       INVESTMENT              INVESTMENT
+20208ac723049459e30f    2020-02-05       INVESTMENT                    None
+20238ac72304973ec1ff    2023-08-25       RETIREMENT                    None
+14BK05RY4M574AVLXXXX    1988-10-10       RETIREMENT                    None
+43BK08CFZXX05X2XXXXX    2003-05-09       RETIREMENT                    None
+20178ac723049224e434    2017-02-01       RETIREMENT                    None
+80BK0JG4ZB0DIWZEXXXX    2007-11-05       RETIREMENT                    None
+20228ac7230496461a91    2022-09-14       RETIREMENT              RETIREMENT
+
+Counts:
+ total rows: 3856874
+ unique users: 3856874
+ unique target products (next): 6
+
+
+Saved full label counts to diagnostic_label_counts.csv
+
+Top 20 target products by count:
+INVESTMENT          594509
+RETIREMENT          243560
+LIFE_INSURANCE      180005
+NETWORK_PRODUCTS     73617
+DISABILITY            2271
+HEALTH                 124
+
+
+User event counts summary:
+count    3856874.0
+mean           1.0
+std            0.0
+min            1.0
+25%            1.0
+50%            1.0
+75%            1.0
+max            1.0
+
+      from_product       to_product   count     prob
+      RETIREMENT             None 1503919 0.797116
+      RETIREMENT       RETIREMENT  180125 0.095471
+      RETIREMENT       INVESTMENT  130940 0.069402
+      RETIREMENT   LIFE_INSURANCE   49191 0.026073
+      RETIREMENT NETWORK_PRODUCTS   22408 0.011877
+      RETIREMENT       DISABILITY      72 0.000038
+      RETIREMENT           HEALTH      45 0.000024
+  LIFE_INSURANCE             None  616608 0.720547
+  LIFE_INSURANCE   LIFE_INSURANCE  116713 0.136387
+  LIFE_INSURANCE       INVESTMENT   64360 0.075209
+  LIFE_INSURANCE       RETIREMENT   40077 0.046833
+  LIFE_INSURANCE NETWORK_PRODUCTS   17219 0.020122
+  LIFE_INSURANCE       DISABILITY     733 0.000857
+  LIFE_INSURANCE           HEALTH      40 0.000047
+NETWORK_PRODUCTS             None  179883 0.687823
+NETWORK_PRODUCTS       INVESTMENT   33961 0.129858
+NETWORK_PRODUCTS NETWORK_PRODUCTS   29714 0.113618
+NETWORK_PRODUCTS       RETIREMENT   10102 0.038627
+NETWORK_PRODUCTS   LIFE_INSURANCE    7835 0.029959
+NETWORK_PRODUCTS           HEALTH      17 0.000065
+NETWORK_PRODUCTS       DISABILITY      13 0.000050
+      INVESTMENT             None  396055 0.515193
+      INVESTMENT       INVESTMENT  357669 0.465260
+      INVESTMENT       RETIREMENT    8833 0.011490
+      INVESTMENT   LIFE_INSURANCE    3386 0.004405
+      INVESTMENT NETWORK_PRODUCTS    2796 0.003637
+      INVESTMENT           HEALTH      11 0.000014
+           OTHER             None   59555 0.811078
+           OTHER       INVESTMENT    7261 0.098887
+           OTHER       RETIREMENT    4076 0.055511
+           OTHER   LIFE_INSURANCE    1529 0.020823
+           OTHER NETWORK_PRODUCTS     994 0.013537
+           OTHER       DISABILITY      11 0.000150
+           OTHER           HEALTH       1 0.000014
+      DISABILITY             None    6484 0.627079
+      DISABILITY       DISABILITY    1442 0.139458
+      DISABILITY   LIFE_INSURANCE    1317 0.127369
+      DISABILITY NETWORK_PRODUCTS     471 0.045551
+      DISABILITY       RETIREMENT     330 0.031915
+      DISABILITY       INVESTMENT     296 0.028627
+          HEALTH             None     284 0.743455
+          HEALTH   LIFE_INSURANCE      34 0.089005
+          HEALTH       INVESTMENT      22 0.057592
+          HEALTH       RETIREMENT      17 0.044503
+          HEALTH NETWORK_PRODUCTS      15 0.039267
+          HEALTH           HEALTH      10 0.026178
+
+
+  report.json:
+{'n_labels': 6,
+ 'label_counts_top10': {'INVESTMENT': 594509,
+  'RETIREMENT': 243560,
+  'LIFE_INSURANCE': 180005,
+  'NETWORK_PRODUCTS': 73617,
+  'DISABILITY': 2271,
+  'HEALTH': 124},
+ 'label_count_median': 126811.0,
+ 'label_count_mean': 182347.66666666666,
+ 'labels_less_than_1': 0,
+ 'labels_less_than_1_fraction': 0.0,
+ 'labels_less_than_5': 0,
+ 'labels_less_than_5_fraction': 0.0,
+ 'labels_less_than_10': 0,
+ 'labels_less_than_10_fraction': 0.0,
+ 'labels_less_than_20': 0,
+ 'labels_less_than_20_fraction': 0.0,
+ 'labels_less_than_50': 0,
+ 'labels_less_than_50_fraction': 0.0,
+ 'label_count_p50': 126811,
+ 'label_count_p75': 227671,
+ 'label_count_p90': 419034,
+ 'label_count_p95': 506771,
+ 'label_count_p99': 576961}
