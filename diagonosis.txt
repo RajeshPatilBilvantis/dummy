@@ -251,3 +251,23 @@ DONE.
  4) diagnostic_label_counts.csv top 50 rows (if available).
 
 Once you paste those, I'll run the targeted diagnosis and give a prioritized experiment plan.
+
+
+Index(['axa_party_id', 'policy_no', 'register_date', 'trmn_eff_date',
+       'wti_lob_txt', 'prod_lob', 'agt_class', 'isrd_brth_date', 'psn_age',
+       'acct_val_amt', 'face_amt', 'cash_val_amt', 'wc_total_assets',
+       'wc_assetmix_stocks', 'wc_assetmix_bonds', 'wc_assetmix_mutual_funds',
+       'wc_assetmix_annuity', 'wc_assetmix_deposits',
+       'wc_assetmix_other_assets', 'client_seg', 'client_seg_1', 'aum_band',
+       'sub_product_level_1', 'sub_product_level_2', 'Product',
+       'business_month', 'branchoffice_code', 'agt_no', 'division_name',
+       'mkt_prod_hier', 'policy_status', 'channel', 'agent_segment',
+       'second_policy_no', 'second_register_date', 'second_trmn_eff_date',
+       'second_wti_lob_txt', 'second_prod_lob', 'second_sub_product_level_1',
+       'second_sub_product_level_2', 'second_Product',
+       'stock_allocation_ratio', 'bond_allocation_ratio',
+       'annuity_allocation_ratio', 'mutual_fund_allocation_ratio',
+       'aum_to_asset_ratio', 'policy_value_to_assets_ratio',
+       'product_category', 'second_product_category', 'season_of_first_policy',
+       'age_at_first_policy', 'age_at_second_policy', 'years_to_second'],
+      dtype='object')
