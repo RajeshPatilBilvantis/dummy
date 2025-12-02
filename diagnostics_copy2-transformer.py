@@ -1,3 +1,71 @@
+import ast
+
+def normalize_history(x):
+    # convert None to empty list
+    if x is None:
+        return []
+    # convert scalar (float/int) to list
+    if isinstance(x, (int, float)):
+        return [int(x)]
+    # convert tuple → list
+    if isinstance(x, tuple):
+        return list(x)
+    # convert numpy array → list
+    if hasattr(x, "tolist"):
+        try:
+            return x.tolist()
+        except:
+            pass
+    # convert nested lists by flattening
+    if isinstance(x, list):
+        flat = []
+        for e in x:
+            if isinstance(e, list):
+                flat.extend(e)
+            else:
+                flat.append(e)
+        return flat
+    # convert string representation of list → real list
+    if isinstance(x, str):
+        try:
+            parsed = ast.literal_eval(x)
+            return parsed if isinstance(parsed, list) else [parsed]
+        except:
+            return []
+    # fallback
+    return []
+
+for df in [train_pd, val_pd, test_pd]:
+    df["history_ids"] = df["history_ids"].apply(normalize_history)
+
+
+import numpy as np
+
+max_len = 10
+
+def expand_history(arr, max_len=10):
+    # remove None and unexpected elements
+    arr = [int(x) for x in arr if isinstance(x, (int, float))]
+    if len(arr) >= max_len:
+        return arr[-max_len:]
+    return [0] * (max_len - len(arr)) + arr
+
+for df in [train_pd, val_pd, test_pd]:
+    expanded = np.vstack(df['history_ids'].apply(lambda x: expand_history(x, max_len)))
+    for i in range(max_len):
+        df[f'hist_{i}'] = expanded[:, i]
+
+# remove original column to avoid leakage
+for df in [train_pd, val_pd, test_pd]:
+    df.drop(columns=["history_ids"], inplace=True)
+
+print(train_pd.filter(regex="hist_").head())
+print(val_pd.filter(regex="hist_").head())
+print(test_pd.filter(regex="hist_").head())
+print("Unique values distribution:", len(set(train_pd['label_id'])))
+
+
+
 train_pd = train_filled.toPandas()
 val_pd = val_filled.toPandas()
 test_pd = test_filled.toPandas()
