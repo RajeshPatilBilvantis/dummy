@@ -63,3 +63,16 @@ f1 = f1_score(test_pd[label_col], test_pred, average="weighted")
 
 print("Test Accuracy:", acc)
 print("Test F1 Score:", f1)
+
+ValueError: operands could not be broadcast together with shapes (8,) (2,) 
+File <command-6604191847308488>, line 13
+     11 max_len = 10
+     12 for df in [train_pd, val_pd, test_pd]:
+---> 13     expanded = np.vstack(df['history_ids'].apply(lambda x: expand_history(x, max_len)))
+     14     for i in range(max_len):
+     15         df[f'hist_{i}'] = expanded[:, i]
+File <command-6604191847308488>, line 8, in expand_history(arr, max_len)
+      6 def expand_history(arr, max_len=10):
+      7     arr = arr[-max_len:]  # keep most recent events
+----> 8     padded = [0] * (max_len - len(arr)) + arr
+      9     return padded
