@@ -31,6 +31,80 @@ CASE
     WHEN Product LIKE '%Health%' OR Product LIKE '%Medical%' OR Product LIKE '%Hospital%' THEN 'HEALTH'
     ELSE 'OTHER'
 END AS product_category,
+----------------------------
+
+from pyspark.sql import functions as F
+
+df_raw = df_raw.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(
+        (F.col("Product").like("%IRA%")) |
+        (F.col("Product").like("%401%")) |
+        (F.col("Product").like("%403%")) |
+        (F.col("Product").like("%SEP%")) |
+        (F.col("Product").like("%Accumulator%")) |
+        (F.col("Product").like("%Retirement%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(F.col("Product").like("%Network%"), "NETWORK_PRODUCTS")
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+    .when(
+        (F.col("Product").like("%Disability%")) |
+        (F.col("Product").like("%DI -%")),
+        "DISABILITY"
+    )
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .when(
+        (F.col("Product").like("%Health%")) |
+        (F.col("Product").like("%Medical%")) |
+        (F.col("Product").like("%Hospital%")),
+        "HEALTH"
+    )
+    .otherwise("OTHER")
+)
 
 
 from pyspark.sql import functions as F
