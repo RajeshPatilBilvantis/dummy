@@ -1,25 +1,50 @@
-   hist_0  hist_1  hist_2  hist_3  ...  hist_6  hist_7  hist_8  hist_9
-0       0       0       0       0  ...       0       0       0       1
-1       0       0       0       0  ...       0       0       1       3
-2       0       0       0       0  ...       1       3       3       5
-3       0       0       0       0  ...       0       0       0       1
-4       0       0       0       0  ...       0       0       1       0
+from collections import Counter
 
-[5 rows x 10 columns]
-   hist_0  hist_1  hist_2  hist_3  ...  hist_6  hist_7  hist_8  hist_9
-0       0       0       0       0  ...       0       0       0       1
-1       0       0       0       0  ...       0       1       0       2
-2       0       0       0       0  ...       0       0       0       0
-3       0       0       0       0  ...       0       0       0       0
-4       0       0       0       0  ...       0       0       1       1
+def extract_history_features(history, num_classes=7):
+    # clean
+    hist = [int(x) for x in history if isinstance(x, (int, float))]
+    if len(hist) == 0:
+        return {
+            "num_prior": 0,
+            "unique_prior": 0,
+            "num_switches": 0,
+            "last_1": 0,
+            "last_2": 0,
+            **{f"freq_{i}":0 for i in range(num_classes)}
+        }
 
-[5 rows x 10 columns]
-   hist_0  hist_1  hist_2  hist_3  ...  hist_6  hist_7  hist_8  hist_9
-0       0       0       0       0  ...       0       1       3       3
-1       0       0       0       0  ...       0       0       1       0
-2       0       0       0       0  ...       0       0       0       0
-3       0       0       0       0  ...       1       1       1       1
-4       0       0       1       1  ...       1       1       1       1
+    # core stats
+    num_prior = len(hist)
+    unique_prior = len(set(hist))
+    num_switches = sum(1 for i in range(1, len(hist)) if hist[i] != hist[i-1])
+
+    last_1 = hist[-1]
+    last_2 = hist[-2] if len(hist) >= 2 else 0
+
+    freq = Counter(hist)
+    freq_features = {f"freq_{i}": freq.get(i, 0) for i in range(num_classes)}
+
+    return {
+        "num_prior": num_prior,
+        "unique_prior": unique_prior,
+        "num_switches": num_switches,
+        "last_1": last_1,
+        "last_2": last_2,
+        **freq_features
+    }
+
+for df in [train_pd, val_pd, test_pd]:
+    extracted = df["history_ids"].apply(extract_history_features)
+    expanded = pd.DataFrame(list(extracted))
+    df.reset_index(drop=True, inplace=True)
+    df = pd.concat([df, expanded], axis=1)
+
+
+for df in [train_pd, val_pd, test_pd]:
+    df.drop(columns=["history_ids"], inplace=True)
+
+
+train_pd[['num_prior','unique_prior','num_switches','last_1','last_2']].head()
 
 [5 rows x 10 columns]
 Unique values distribution: 6
