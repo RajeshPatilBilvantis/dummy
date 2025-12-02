@@ -59,7 +59,191 @@ df_events = df_events.join(df_counts, on="cont_id", how="left")
 # drop users with fewer than 1 if needed (we do filtering later)
 print("Sample events:")
 display(df_events.limit(10))
+--------------------------------------------
 
+# CELL 3: build ordered sequences using RDD. Each item => (cont_id, dict{...})
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, ArrayType, DoubleType, LongType, TimestampType, MapType
+import json
+
+# Choose features to carry per event for model input
+# product only for categorical sequence; we also create a few numeric arrays (acct_val_amt, face_amt, psn_age) aligned with product sequence
+prod_col = "product_category"
+num_cols_seq = ["acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets", "psn_age"]  # keep only if present
+
+# Keep only necessary columns for the sequence RDD
+keep_for_rdd = ["cont_id", "event_idx", "register_date_ts", prod_col] + [c for c in num_cols_seq if c in df_events.columns]
+df_rdd = df_events.select(*keep_for_rdd).rdd.map(lambda r: (
+    r["cont_id"],
+    {
+        "event_idx": int(r["event_idx"]),
+        "ts": r["register_date_ts"].isoformat() if r["register_date_ts"] is not None else None,
+        "prod": r[prod_col],
+        "nums": [ (r[c] if r[c] is not None else None) for c in num_cols_seq if c in df_events.columns ]
+    }
+))
+
+# groupByKey (distributed)
+grouped = df_rdd.groupByKey().mapValues(list)
+
+# sort lists per user and keep only those with >= MIN_EVENTS
+def build_sequence(events_list):
+    # events_list: list of dicts
+    events_sorted = sorted(events_list, key=lambda x: x["event_idx"])
+    # produce lists
+    prods = [e["prod"] for e in events_sorted]
+    timestamps = [e["ts"] for e in events_sorted]
+    nums = [e["nums"] for e in events_sorted]  # list of lists per event
+    return (prods, timestamps, nums)
+
+seqs_rdd = grouped.mapValues(build_sequence).filter(lambda kv: len(kv[1][0]) >= MIN_EVENTS)
+
+# map to final structure: cont_id, prod_list, ts_list, num_matrix (list of lists)
+def to_row(kv):
+    cont_id = kv[0]
+    prods, ts, nums = kv[1]
+    # label is next product after last event (we will produce training rows later)
+    return (cont_id, prods, ts, nums)
+
+final_rdd = seqs_rdd.map(lambda kv: to_row(kv))
+
+# Convert back to DataFrame
+schema = StructType([
+    StructField("cont_id", StringType(), False),
+    StructField("prod_seq", ArrayType(StringType()), False),
+    StructField("ts_seq", ArrayType(StringType()), False),
+    StructField("num_seq", ArrayType(ArrayType(StringType())), False)  # stringified numbers; we'll cast later
+])
+
+# Because num_seq may have mixed types and None, we keep as strings for safety; convert later in pandas if needed
+df_seqs = final_rdd.map(lambda x: (x[0], x[1], x[2], [[str(v) if v is not None else None for v in row] for row in x[3]])).toDF(schema)
+
+print("Users with >= {} events: {}".format(MIN_EVENTS, df_seqs.count()))
+display(df_seqs.limit(5))
+
+# CELL 4: build product vocabulary and map sequences to ids
+from pyspark.sql.types import ArrayType, IntegerType
+from pyspark.sql import functions as F
+
+# build product vocabulary from DF
+prod_counts = df_seqs.selectExpr("explode(prod_seq) as prod").groupBy("prod").count().orderBy(F.desc("count"))
+prod_list = [row["prod"] for row in prod_counts.collect()]
+print("Unique products in sequences:", len(prod_list))
+prod2id = {p:i for i,p in enumerate(prod_list)}
+print("Top products:", prod_list[:10])
+
+# Broadcast mapping
+sc = spark.sparkContext
+bmap = sc.broadcast(prod2id)
+
+# UDF to map product list to id list, truncate to last MAX_SEQ_LEN (most recent)
+def map_and_truncate(prod_seq):
+    ids = [ bmap.value.get(p, -1) for p in prod_seq ]
+    # keep last MAX_SEQ_LEN events (most recent)
+    if len(ids) > MAX_SEQ_LEN:
+        ids = ids[-MAX_SEQ_LEN:]
+    return ids
+
+map_udf = F.udf(map_and_truncate, ArrayType(IntegerType()))
+df_seqs = df_seqs.withColumn("seq_prod_ids", map_udf(F.col("prod_seq")))
+
+# also compute seq_len
+df_seqs = df_seqs.withColumn("seq_len", F.size("seq_prod_ids"))
+
+# filter again to ensure seq_len >= MIN_EVENTS (after truncation)
+df_seqs = df_seqs.filter(F.col("seq_len") >= MIN_EVENTS)
+
+print("After truncation users:", df_seqs.count())
+display(df_seqs.select("cont_id","seq_len","seq_prod_ids").limit(5))
+# CELL 5: extract label (next product) and align sequences
+# We'll use the original prod_seq and ts_seq to get the label index.
+from pyspark.sql.types import IntegerType, StringType
+
+# UDF to get label (product id) following the truncated history
+def get_label_and_trim(prod_seq, seq_prod_ids):
+    # prod_seq: full prod list
+    # seq_prod_ids: truncated last N product ids we kept
+    # Find where the truncated tail appears in prod_seq (match by product ids)
+    # Naive approach: label is the element immediately after the last kept event in the original sequence.
+    # We'll compute label_index = len(prod_seq) - len(seq_prod_ids)
+    try:
+        full_len = len(prod_seq)
+        kept_len = len(seq_prod_ids)
+        label_index = full_len - kept_len  # this is where the next event is in full sequence
+        # next product exists if label_index < full_len - 0 (i.e., there is at least one more element after the kept tail)
+        # But we actually want the event immediately AFTER the kept tail, which is at index full_len - 1 (last) + 1 -> invalid.
+        # Simpler: we will use the original full prod_seq: the label is the element at index (full_len - kept_len)
+        # However safe compute:
+        if full_len > kept_len:
+            # label is the element at position full_len - kept_len (0-based) ??? revise: example full=[a,b,c,d], kept last 2 -> [c,d], full_len=4 kept_len=2 label is element after d -> none.
+            # We actually want to predict the next product after the last item in truncated history, which exists only if there is an element after the truncated last element.
+            # To avoid confusion, simpler approach: we choose to make training examples where label = element immediately after the *truncated* history in original sequence.
+            # We find index_of_last_kept = len(prod_seq) - 1  (if we kept last K), then label is prod_seq[-1] ??? that's wrong.
+            # Correct approach: If we kept last K items from the beginning to some point, the label is the item at position full_len - (K) + ??? This is messy in UDF.
+            # Simpler robust approach: create shifted windows earlier in RDD building. To avoid errors, we'll fallback to building training by sliding windows in RDD instead.
+            return None
+        else:
+            return None
+    except Exception as e:
+        return None
+
+# The above UDF logic is intentionally left incomplete, because we will create training examples more robustly using RDD sliding windows in the next cell.
+print('Skipping label UDF; will create training examples using sliding-window RDD approach in next step.')
+# CELL 6: sliding-window training examples (RDD)
+# Start from the original grouped RDD (before truncation) or reuse grouped from earlier (seqs_rdd)
+# We'll re-create grouped for safety from df_events.rdd as (cont_id, sorted_events)
+
+# Build (cont_id, [prod_ids in order])
+prod_map = bmap.value  # name from earlier cell
+
+# Build an RDD of (cont_id, [prod_id ints in order])
+prod_seq_rdd = df_events.select("cont_id", "event_idx", "product_category").rdd.map(lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"]))) \
+    .groupByKey().mapValues(lambda evs: sorted(list(evs), key=lambda x: x[0])) \
+    .mapValues(lambda evs: [ prod_map.get(p[1], -1) for p in evs ])
+
+# filter by MIN_EVENTS
+prod_seq_rdd = prod_seq_rdd.filter(lambda kv: len(kv[1]) >= MIN_EVENTS)
+
+# sliding window generator: emits (cont_id, history_ids, label_id)
+def sliding_examples(kv):
+    cont_id, seq = kv
+    examples = []
+    n = len(seq)
+    # generate windows where history length from 1..MAX_SEQ_LEN (or choose min)
+    # we will produce only windows where label exists (i.e., history_end_index < n-1)
+    for end in range(0, n-1):
+        # history is seq[max(0, end - MAX_SEQ_LEN + 1) : end+1]
+        start = max(0, end - (MAX_SEQ_LEN - 1))
+        history = seq[start:end+1]
+        label = seq[end+1]
+        # optionally skip very short history if you want
+        examples.append((cont_id, history, label))
+    return examples
+
+examples_rdd = prod_seq_rdd.flatMap(sliding_examples)
+# Optionally sample examples if too many
+# examples_rdd = examples_rdd.sample(False, 0.2, seed=42)
+
+# Convert to DataFrame with schema (cont_id, history (array<int>), label int)
+from pyspark.sql.types import StructType, StructField, ArrayType, IntegerType, StringType
+examples_df = examples_rdd.map(lambda x: (str(x[0]), x[1], int(x[2]))).toDF(["cont_id", "history_ids", "label_id"])
+
+print("Total training examples (sliding windows):", examples_df.count())
+display(examples_df.limit(10))
+# CELL 7: split and save
+train_frac = 0.8
+val_frac = 0.1
+test_frac = 0.1
+
+# For time-based split it's better to split by latest event timestamp; for speed we random-split examples (ok for initial dev)
+train_df, val_df, test_df = examples_df.randomSplit([train_frac, val_frac, test_frac], seed=42)
+
+# Persist and save to DBFS parquet
+train_df.write.mode("overwrite").parquet(OUTPARQUET + "train")
+val_df.write.mode("overwrite").parquet(OUTPARQUET + "val")
+test_df.write.mode("overwrite").parquet(OUTPARQUET + "test")
+
+print("Saved train/val/test parquet to:", OUTPARQUET)
+print("Train count:", train_df.count(), "Val:", val_df.count(), "Test:", test_df.count())
 
 -------------------------------------------------------------------------
 
