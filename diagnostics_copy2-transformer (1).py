@@ -1,3 +1,81 @@
+from pyspark.sql import functions as F
+from pyspark.sql import Window
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
+
+MIN_EVENTS = 3
+MAX_SEQ_LEN = 32
+
+# --- Step 1: Prepare sorted minimal event list ---
+events_df = (
+    df_raw
+    .select("cont_id", "product_category", "register_date")
+    .filter(F.col("cont_id").isNotNull() & F.col("register_date").isNotNull())
+    .withColumn("register_ts", F.to_timestamp("register_date"))
+)
+
+w = Window.partitionBy("cont_id").orderBy("register_ts")
+events_df = events_df.withColumn("event_idx", F.row_number().over(w))
+
+# keep cont_id -> ordered product list
+rdd = (
+    events_df
+    .select("cont_id", "event_idx", "product_category")
+    .rdd
+    .map(lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"])))
+)
+
+# group & sort
+grouped = (
+    rdd.groupByKey()
+    .mapValues(lambda x: [p for _, p in sorted(list(x), key=lambda z: z[0])])
+)
+
+# minimum events
+grouped = grouped.filter(lambda kv: len(kv[1]) >= MIN_EVENTS)
+
+# --- Step 2: Build vocabulary ---
+all_products = (
+    grouped.flatMap(lambda kv: kv[1]).map(lambda x: (x, 1)).reduceByKey(lambda a,b: a+b)
+    .sortBy(lambda kv: -kv[1])
+    .map(lambda kv: kv[0])
+).collect()
+
+prod2id = {p:i for i,p in enumerate(all_products)}
+bmap = spark.sparkContext.broadcast(prod2id)
+
+
+# --- Step 3: Sliding-window examples ---
+def make_examples(kv):
+    cont_id, seq = kv
+    seq_ids = [bmap.value.get(x, -1) for x in seq]
+    n = len(seq_ids)
+    samples = []
+    for end in range(MIN_EVENTS, n):
+        hist = seq_ids[max(0, end-MAX_SEQ_LEN):end]     # history
+        label = seq_ids[end]                             # next product to predict
+        samples.append((cont_id, hist, label, len(hist)))
+    return samples
+
+train_rdd = grouped.flatMap(make_examples)
+
+
+# --- Step 4: Create final dataframe ---
+schema = StructType([
+    StructField("cont_id", StringType(), True),
+    StructField("hist_seq", ArrayType(IntegerType()), True),
+    StructField("label", IntegerType(), True),
+    StructField("seq_len", IntegerType(), True),
+])
+
+train_df = spark.createDataFrame(train_rdd, schema)
+
+train_df = train_df.filter(F.col("seq_len") >= MIN_EVENTS)
+
+display(train_df.limit(10))
+print("Final training rows:", train_df.count())
+
+
+
 # Databricks notebook source
 # %pip install synapseml
 # dbutils.library.restartPython()
