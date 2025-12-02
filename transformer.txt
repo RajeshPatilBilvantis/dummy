@@ -1,12 +1,158 @@
 
-policy_no	source_sys_id	prod_code	plan_code	plan_subcd_code	register_date	trmn_eff_date	face_amt	cash_val_amt	acct_val_amt	monthly_preminum_amount	isrd_brth_date	birth_dt	ref_num	cont_id	axa_party_id	hhkey	agt_no	strt_date	end_date	class_code	agt_class	branch_name	branchoffice_code	agt_first_name	agt_last_name	business_city	business_state_cod	business_zip_code	division	active_head_count_flag	wm_headcount	division_name	elas_y_n	headcount	wti_lob_txt	mkt_prod_hier	prod_lob	sub_product_level_1	sub_product_level_2	wc_total_assets	wc_assetmix_stocks	wc_assetmix_bonds	wc_assetmix_mutual_funds	wc_assetmix_annuity	wc_assetmix_deposits	wc_assetmix_other_assets	psn_age	client_seg	client_seg_1	aum_band	policy_status	policy_type	designation	final_designation	business_year	quarter	esf_yr	esf_hire	agent_segment	transaction_policy	client_type	channel	business_month	product_category
-AN0000356481	AXN		FL		2004-12-22	null	780000	0	0	null	null	1961-08-28 00:00:00.0	568353142	237963917674593304	00BK05RY3DUWC9HQXXXX	0000970949437	085589      	2013-08-13	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	Southern California	53	JERROLD R      	SMITH                    	LOS ANGELES	CA	90067	51	Y	1	Pacific Complex	y	y	Equitable Network	EQUITABLE NETWORK	NETWORK	NETWORK PRODUCTS	NETWORK PRODUCTS	1156376	291031	12530	249517	344726	243674	14898	61	1-2.99m	Transitioners	<$25K	Active	Old Policy	Individual	Individual	2021	3	null	null	Generalist	null	Existing Client	Retail	202109	NETWORK_PRODUCTS
-AN0018142442	AXN		FL		2016-01-26	null	120000	0	0	null	null	1952-01-26 00:00:00.0	421740154	383367678197881926	00BK05RY3R14WBG7XXXX	null	066843      	2016-01-26	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	Alabama/Gulf Coast	82	MARK           	NALL, CFP, CLU           	BIRMINGHAM	AL	35242	46	Y	1	New Dimension	y	y	Equitable Network	EQUITABLE NETWORK	NETWORK	NETWORK PRODUCTS	NETWORK PRODUCTS	null	null	null	null	null	null	null	70	null	No Data	<$25K	Active	Old Policy	Firms	Firm	2021	3	ESF2001	ESF2001	WM	null	Existing Client	Retail	202109	NETWORK_PRODUCTS
-AN0007049724	AXN		FL		2009-09-08	null	200000	0	0	null	null	1963-01-06 00:00:00.0	462416870	654536754267967118	00BK05RY3SF1C2NQXXXX	null	031818      	2009-09-08	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	Texas	54	MARK           	MOHR                     	HOUSTON	TX	77027	46	Y	1	New Dimension	y	y	Equitable Network	EQUITABLE NETWORK	NETWORK	NETWORK PRODUCTS	NETWORK PRODUCTS	null	null	null	null	null	null	null	59	null	No Data	<$25K	Active	Old Policy	Others	Others	2021	3	null	null	Generalist	null	Existing Client	Retail	202109	NETWORK_PRODUCTS
-AN0000345430	AXN		FL		2004-02-01	null	1300000	0	0	null	null	1963-08-01 00:00:00.0	448688841	197037652791297726	00BK0B3TB3BDD9CUXXXX	null	098368      	2004-02-01	9999-12-31	S	RSF - RETIRED SALESFORCE	Illinois	360	KEVIN          	CLARKE, CHFC, CLU        	WILMETTE	IL	60091	16	Y	1	Central Complex	y	y	Equitable Network	EQUITABLE NETWORK	NETWORK	NETWORK PRODUCTS	NETWORK PRODUCTS	null	null	null	null	null	null	null	59	null	No Data	<$25K	Active	Old Policy	Others	Others	2021	3	null	null	Generalist	null	Existing Client	Retail	202109	NETWORK_PRODUCTS
-AN0007079326	AXN		FL		2010-07-09	null	1000000	0	0	null	null	1971-06-30 00:00:00.0	096845529	607836763055744673	00BK0DTHN0EW5N0YXXXX	0001050684601	008585      	2010-07-09	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	Greater New York	112	ELLEN          	DE SARNO, CFP, CHFC, CLU 	SUMMIT	NJ	07901	49	Y	1	Greater NY Complex	y	y	Equitable Network	EQUITABLE NETWORK	NETWORK	NETWORK PRODUCTS	NETWORK PRODUCTS	1246361	333841	21687	307072	108282	455627	19852	51	1-2.99m	Wealth Builders	<$25K	Active	Old Policy	EQH Gold	EQH Gold	2021	3	ESF1994	ESF1994	WM	null	Existing Client	Retail	202109	NETWORK_PRODUCTS
-M010711327	TOP	1ZUU	0001		1978-03-15	null	41931	41427.8203125	41427.8203125	null	1924-06-23	1924-06-23 00:00:00.0	462281323	753565071360646704	00BK0GPWFI0IFGSMXXXX	0001220046372	112582      	2011-12-30	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	PCPG	83	-              	PREFERRED CLIENT PARTNERS	NEW YORK	NY	10028	08	N	0	Division 8	y	n	Life Insurance	Individual	LIFE	PROTECTIVE PRODUCT	MONY PROTECTIVE PRODUCT	1518512	418805	102940	620564	77814	270702	27687	98	1-2.99m	Life Legacies	$25-$50K	Active	Old Policy	Others	Others	2021	3	null	null	Generalist	null	Existing Client	Branch Assist	202109	LIFE_INSURANCE
-M007738548	TOP	1ZUU	0057		1954-06-07	null	5000	4865	4865	null	1924-06-23	1924-06-23 00:00:00.0	462281323	753565071360646704	00BK0GPWFI0IFGSMXXXX	0001220046372	112582      	2011-12-30	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	PCPG	83	-              	PREFERRED CLIENT PARTNERS	NEW YORK	NY	10028	08	N	0	Division 8	y	n	Life Insurance	Individual	LIFE	PROTECTIVE PRODUCT	MONY PROTECTIVE PRODUCT	1518512	418805	102940	620564	77814	270702	27687	98	1-2.99m	Life Legacies	<$25K	Active	Old Policy	Others	Others	2021	3	null	null	Generalist	null	Existing Client	Branch Assist	202109	LIFE_INSURANCE
+
+from pyspark.sql import functions as F
+
+df_raw = df_raw.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY"
+    )
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .otherwise("OTHER")
+)
+
+
+
+
+# =====================
+# 3. Exclude OTHER (not part of the 7-class problem)
+# =====================
+df_raw = df_raw.filter(F.col("product_category") != "OTHER")
+
+
+# =====================
+# 4. Basic cleaning - remove policies without dates or customer id
+# =====================
+df_raw = df_raw.filter(
+    F.col("strt_date").isNotNull() & F.col("end_date").isNotNull() & F.col("axa_party_id").isNotNull()
+)
+
+
+# =====================
+# 5. Cast dates correctly (if they are strings)
+# =====================
+df_raw = (
+    df_raw
+    .withColumn("strt_date", F.to_date("strt_date"))
+    .withColumn("end_date", F.to_date("end_date"))
+)
+
+
+# =====================
+# 6. Cache for performance
+# =====================
+df_raw = df_raw.cache()
+df_raw.count()   # trigger caching
+from pyspark.sql import functions as F
+from pyspark.sql import Window
+
+# STEP 2: keep only active policies (to avoid terminated ones)
+df = df_raw.filter(F.col("policy_status") == "Active")
+
+# STEP 3: find purchase order per client (sorted by register date)
+w = Window.partitionBy("cont_id").orderBy("register_date")
+
+df = df.withColumn("rn", F.row_number().over(w))
+
+# STEP 4: first product and second product
+df_pivot = df.withColumn("product_category_next",
+                         F.lead("product_category").over(w))
+
+# Keep only customers with at least 2 products
+df_two = df_pivot.filter(F.col("product_category_next").isNotNull())
+
+display(df_two.select("cont_id", "product_category", "product_category_next").limit(10))
+print("Final training population:", df_two.count())
+feature_cols = [
+    "face_amt", "cash_val_amt", "acct_val_amt",
+    "monthly_preminum_amount", "wc_total_assets",
+    "wc_assetmix_stocks","wc_assetmix_bonds",
+    "wc_assetmix_mutual_funds", "wc_assetmix_annuity",
+    "wc_assetmix_deposits", "wc_assetmix_other_assets",
+    "psn_age", "client_seg", "client_seg_1", "aum_band",
+    "policy_type", "designation", "channel"
+]
+
+df_train = df_two.select(
+    "cont_id",
+   "product_category",
+    "product_category_next",   # ★ LABEL WE WILL PREDICT
+    *feature_cols
+)
+
+display(df_train)
+print("Training DF Count:", df_train.count())
+
+
+cont_id	product_category	product_category_next
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE
+
+
+cont_id	product_category	product_category_next	face_amt	cash_val_amt	acct_val_amt	monthly_preminum_amount	wc_total_assets	wc_assetmix_stocks	wc_assetmix_bonds	wc_assetmix_mutual_funds	wc_assetmix_annuity	wc_assetmix_deposits	wc_assetmix_other_assets	psn_age	client_seg	client_seg_1	aum_band	policy_type	designation	channel
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE	500000	11535.0595703125	11535.0595703125	100	8065506	3318836	1011487	3012448	150191	452278	120266	69	5m+	High Asset Customers	<$25K	Old Policy	Individual	Retail
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE	500000	10226.8095703125	10226.8095703125	100	8065506	3318836	1011487	3012448	150191	452278	120266	69	5m+	High Asset Customers	<$25K	Old Policy	Individual	Retail
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE	500000	10533.240234375	10533.240234375	100	8065506	3318836	1011487	3012448	150191	452278	120266	69	5m+	High Asset Customers	<$25K	Old Policy	Individual	Retail
+100036768312101744	LIFE_INSURANCE	LIFE_INSURANCE	500000	8647.599609375	8647.599609375	100	8065506	3318836	1011487	3012448	150191	452278	120266	69	5m+	High Asset Customers	<$25K	Old Policy	Individual	Retail
+
+
+
+Training DF Count: 223395252
+
+
+
+
+
 
 # =====================
 # 1. Load SQL into Spark DF
