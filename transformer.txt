@@ -8,7 +8,123 @@ AN0007079326	AXN		FL		2010-07-09	null	1000000	0	0	null	null	1971-06-30 00:00:00.
 M010711327	TOP	1ZUU	0001		1978-03-15	null	41931	41427.8203125	41427.8203125	null	1924-06-23	1924-06-23 00:00:00.0	462281323	753565071360646704	00BK0GPWFI0IFGSMXXXX	0001220046372	112582      	2011-12-30	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	PCPG	83	-              	PREFERRED CLIENT PARTNERS	NEW YORK	NY	10028	08	N	0	Division 8	y	n	Life Insurance	Individual	LIFE	PROTECTIVE PRODUCT	MONY PROTECTIVE PRODUCT	1518512	418805	102940	620564	77814	270702	27687	98	1-2.99m	Life Legacies	$25-$50K	Active	Old Policy	Others	Others	2021	3	null	null	Generalist	null	Existing Client	Branch Assist	202109	LIFE_INSURANCE
 M007738548	TOP	1ZUU	0057		1954-06-07	null	5000	4865	4865	null	1924-06-23	1924-06-23 00:00:00.0	462281323	753565071360646704	00BK0GPWFI0IFGSMXXXX	0001220046372	112582      	2011-12-30	9999-12-31	E	ESF - EXPERIENCED SALESFORCE	PCPG	83	-              	PREFERRED CLIENT PARTNERS	NEW YORK	NY	10028	08	N	0	Division 8	y	n	Life Insurance	Individual	LIFE	PROTECTIVE PRODUCT	MONY PROTECTIVE PRODUCT	1518512	418805	102940	620564	77814	270702	27687	98	1-2.99m	Life Legacies	<$25K	Active	Old Policy	Others	Others	2021	3	null	null	Generalist	null	Existing Client	Branch Assist	202109	LIFE_INSURANCE
 
+# =====================
+# 1. Load SQL into Spark DF
+# =====================
+query = """
+SELECT *
+FROM client_metrics   -- you already ran this and validated columns
+"""
+df_raw = spark.sql(query)
 
+
+# =====================
+# 2. Add product_category column
+# =====================
+from pyspark.sql import functions as F
+
+df_raw = df_raw.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(
+        (F.col("Product").like("%IRA%")) |
+        (F.col("Product").like("%401%")) |
+        (F.col("Product").like("%403%")) |
+        (F.col("Product").like("%SEP%")) |
+        (F.col("Product").like("%Accumulator%")) |
+        (F.col("Product").like("%Retirement%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(F.col("Product").like("%Network%"), "NETWORK_PRODUCTS")
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+    .when(
+        (F.col("Product").like("%Disability%")) |
+        (F.col("Product").like("%DI -%")),
+        "DISABILITY"
+    )
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .when(
+        (F.col("Product").like("%Health%")) |
+        (F.col("Product").like("%Medical%")) |
+        (F.col("Product").like("%Hospital%")),
+        "HEALTH"
+    )
+    .otherwise("OTHER")
+)
+
+
+# =====================
+# 3. Exclude OTHER (not part of the 7-class problem)
+# =====================
+df_raw = df_raw.filter(F.col("product_category") != "OTHER")
+
+
+# =====================
+# 4. Basic cleaning - remove policies without dates or customer id
+# =====================
+df_raw = df_raw.filter(
+    F.col("strt_date").isNotNull() & F.col("end_date").isNotNull() & F.col("axa_party_id").isNotNull()
+)
+
+
+# =====================
+# 5. Cast dates correctly (if they are strings)
+# =====================
+df_raw = (
+    df_raw
+    .withColumn("strt_date", F.to_date("strt_date"))
+    .withColumn("end_date", F.to_date("end_date"))
+)
+
+
+# =====================
+# 6. Cache for performance
+# =====================
+df_raw = df_raw.cache()
+df_raw.count()   # trigger caching
+------------
 from pyspark.sql import functions as F
 from pyspark.sql import Window
 
