@@ -15,3 +15,24 @@ Sample missing cont_ids (should be zero rows):
 
 Missing count: 0
 Saved merged files; counts: 656383 81650 82371
+
+
+from pyspark.sql.functions import col, when, lit
+
+# For numeric static features → fill zero
+numeric_features = [f for f in feature_cols if df_events.schema[f].dataType.simpleString() in ["int", "bigint", "double", "float"]]
+
+# For categorical static features → fill mode (most frequent value)
+categorical_features = list(set(feature_cols) - set(numeric_features))
+mode_dict = {c: client_features.groupBy(c).count().orderBy("count", ascending=False).first()[0] for c in categorical_features}
+
+train_filled = train_merged
+for f in numeric_features:
+    train_filled = train_filled.withColumn(f, when(col(f).isNull(), lit(0)).otherwise(col(f)))
+for f in categorical_features:
+    train_filled = train_filled.withColumn(f, when(col(f).isNull(), lit(mode_dict[f])).otherwise(col(f)))
+
+# quick fill: numeric → 0, string → "UNKNOWN"
+train_filled = train_merged.fillna(0).fillna("UNKNOWN")
+val_filled = val_merged.fillna(0).fillna("UNKNOWN")
+test_filled = test_merged.fillna(0).fillna("UNKNOWN")
