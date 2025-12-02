@@ -1,4 +1,41 @@
+cell 1:
 
+# CELL 1: pick and sanitize columns (run on Spark)
+from pyspark.sql import functions as F
+
+# Parameters
+SAMPLE_FRACTION = None   # e.g. 0.1 for 10% sample; set to None to use full data
+MIN_EVENTS = 3           # keep customers with >= MIN_EVENTS
+MAX_SEQ_LEN = 32
+OUTPARQUET = "/dbfs/tmp/seqs_parquet/"
+
+# Choose columns required for sequence model (lightweight)
+keep_cols = [
+    "cont_id", "axa_party_id", "policy_no", "register_date",
+    "product_category", "prod_lob", "sub_product_level_1", "sub_product_level_2",
+    "acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
+    "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
+    "psn_age","client_seg","client_seg_1","aum_band",
+    "channel","agent_segment","branchoffice_code"
+]
+
+# Ensure columns exist
+cols_present = [c for c in keep_cols if c in df_raw.columns]
+print("Using columns:", len(cols_present), "->", cols_present)
+
+# Filter out rows with null register_date or null cont_id or product_category
+df_events = df_raw.select(*cols_present).filter(
+    (F.col("cont_id").isNotNull()) & (F.col("register_date").isNotNull()) & (F.col("product_category").isNotNull())
+)
+
+# optional sampling to reduce size (set SAMPLE_FRACTION to float if needed)
+if SAMPLE_FRACTION is not None:
+    print("Sampling fraction:", SAMPLE_FRACTION)
+    df_events = df_events.sample(withReplacement=False, fraction=float(SAMPLE_FRACTION), seed=42)
+
+print("Event rows after filter (approx):", df_events.count())
+-------------------------------------------------------------------------
 
 from pyspark.sql import functions as F
 
