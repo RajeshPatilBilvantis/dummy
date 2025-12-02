@@ -1,3 +1,38 @@
+
+CASE 
+    WHEN prod_lob = 'LIFE' THEN 'LIFE_INSURANCE'
+    WHEN sub_product_level_1 IN ('VLI', 'WL', 'UL/IUL', 'TERM', 'PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+    WHEN sub_product_level_2 LIKE '%LIFE%' THEN 'LIFE_INSURANCE'
+    WHEN sub_product_level_2 IN ('VARIABLE UNIVERSAL LIFE', 'WHOLE LIFE', 'UNIVERSAL LIFE', 
+                                  'INDEX UNIVERSAL LIFE', 'TERM PRODUCT', 'VARIABLE LIFE', 
+                                  'SURVIVORSHIP WHOLE LIFE', 'MONY PROTECTIVE PRODUCT') THEN 'LIFE_INSURANCE'
+    WHEN prod_lob IN ('GROUP RETIREMENT', 'INDIVIDUAL RETIREMENT') THEN 'RETIREMENT'
+    WHEN sub_product_level_1 IN ('EQUIVEST', 'RETIREMENT 401K', 'ACCUMULATOR', 
+                                  'RETIREMENT CORNERSTONE', 'SCS', 'INVESTMENT EDGE') THEN 'RETIREMENT'
+    WHEN sub_product_level_2 LIKE '%403B%' OR sub_product_level_2 LIKE '%401%' 
+         OR sub_product_level_2 LIKE '%IRA%' OR sub_product_level_2 LIKE '%SEP%' THEN 'RETIREMENT'
+    WHEN Product LIKE '%IRA%' OR Product LIKE '%401%' OR Product LIKE '%403%' 
+         OR Product LIKE '%SEP%' OR Product LIKE '%Accumulator%' 
+         OR Product LIKE '%Retirement%' THEN 'RETIREMENT'
+    WHEN prod_lob = 'BROKER DEALER' THEN 'INVESTMENT'
+    WHEN sub_product_level_1 IN ('INVESTMENT PRODUCT - DIRECT', 'INVESTMENT PRODUCT - BROKERAGE', 
+                                  'INVESTMENT PRODUCT - ADVISORY', 'DIRECT', 'BROKERAGE', 
+                                  'ADVISORY', 'CASH SOLICITOR') THEN 'INVESTMENT'
+    WHEN sub_product_level_2 LIKE '%Investment%' OR sub_product_level_2 LIKE '%Brokerage%' 
+         OR sub_product_level_2 LIKE '%Advisory%' THEN 'INVESTMENT'
+    WHEN prod_lob = 'NETWORK' THEN 'NETWORK_PRODUCTS'
+    WHEN sub_product_level_1 = 'NETWORK PRODUCTS' OR sub_product_level_2 = 'NETWORK PRODUCTS' THEN 'NETWORK_PRODUCTS'
+    WHEN Product LIKE '%Network%' THEN 'NETWORK_PRODUCTS'
+    WHEN prod_lob = 'OTHERS' AND sub_product_level_1 = 'HAS' THEN 'DISABILITY'
+    WHEN sub_product_level_2 = 'HAS - DISABILITY' THEN 'DISABILITY'
+    WHEN Product LIKE '%Disability%' OR Product LIKE '%DI -%' THEN 'DISABILITY'
+    WHEN prod_lob = 'OTHERS' THEN 'HEALTH'
+    WHEN sub_product_level_2 = 'GROUP HEALTH PRODUCTS' THEN 'HEALTH'
+    WHEN Product LIKE '%Health%' OR Product LIKE '%Medical%' OR Product LIKE '%Hospital%' THEN 'HEALTH'
+    ELSE 'OTHER'
+END AS product_category,
+
+
 from pyspark.sql import functions as F
 from pyspark.sql import Window
 
