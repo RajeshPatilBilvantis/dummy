@@ -36,6 +36,32 @@ if SAMPLE_FRACTION is not None:
 
 print("Event rows after filter (approx):", df_events.count())
 -------------------------------------------------------------------------
+# CELL 2: deduplicate and prepare lightweight event tuples
+from pyspark.sql import Window
+
+# dedupe exact duplicates
+df_events = df_events.dropDuplicates(["cont_id", "register_date", "policy_no", "product_category"])
+
+# make sure register_date is a timestamp or date
+df_events = df_events.withColumn("register_date_ts", F.to_timestamp("register_date"))
+
+# sort per user and assign event_index
+w = Window.partitionBy("cont_id").orderBy(F.col("register_date_ts").asc(), F.col("policy_no").asc())
+df_events = df_events.withColumn("event_idx", F.row_number().over(w))
+
+# compute per-user count
+df_counts = df_events.groupBy("cont_id").agg(F.count("*").alias("n_events"))
+print("Unique users with events:", df_counts.count())
+
+# join counts back
+df_events = df_events.join(df_counts, on="cont_id", how="left")
+
+# drop users with fewer than 1 if needed (we do filtering later)
+print("Sample events:")
+display(df_events.limit(10))
+
+
+-------------------------------------------------------------------------
 
 from pyspark.sql import functions as F
 
