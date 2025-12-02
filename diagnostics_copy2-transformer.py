@@ -1,38 +1,65 @@
-Examples BEFORE merge -> train/val/test counts: 656383 81650 82371
-Unique cont_ids BEFORE -> 265899 69684 70032
-Client features rows: 3926686
-Unique cont_ids in client_features: 3926686
+train_pd = train_filled.toPandas()
+val_pd = val_filled.toPandas()
+test_pd = test_filled.toPandas()
+import numpy as np
 
-Inner join matches (train): 656383
-Left-join total rows: 656383 Rows with NULL static_features: 5772
-Any duplicated cont_id in client_features? -> 0
-After dropDuplicates, client_features rows: 3926686
-train_before.cont_id type: [StringType()]
-client_features.cont_id type: [StringType()]
-After merge counts: 656383 81650 82371
-Expected counts (before merge): 656383 81650 82371
-Sample missing cont_ids (should be zero rows):
+def expand_history(arr, max_len=10):
+    arr = arr[-max_len:]  # keep most recent events
+    padded = [0] * (max_len - len(arr)) + arr
+    return padded
 
-Missing count: 0
-Saved merged files; counts: 656383 81650 82371
+max_len = 10
+for df in [train_pd, val_pd, test_pd]:
+    expanded = np.vstack(df['history_ids'].apply(lambda x: expand_history(x, max_len)))
+    for i in range(max_len):
+        df[f'hist_{i}'] = expanded[:, i]
 
+train_pd = train_pd.drop(columns=['history_ids'])
+val_pd   = val_pd.drop(columns=['history_ids'])
+test_pd  = test_pd.drop(columns=['history_ids'])
+label_col = "label_id"
 
-from pyspark.sql.functions import col, when, lit
+seq_cols = [f"hist_{i}" for i in range(max_len)]
+static_cols = [c for c in train_pd.columns if c not in [label_col] + seq_cols + ["cont_id"]]
 
-# For numeric static features → fill zero
-numeric_features = [f for f in feature_cols if df_events.schema[f].dataType.simpleString() in ["int", "bigint", "double", "float"]]
+feature_cols = seq_cols + static_cols
+print(len(feature_cols), "features")
+import lightgbm as lgb
 
-# For categorical static features → fill mode (most frequent value)
-categorical_features = list(set(feature_cols) - set(numeric_features))
-mode_dict = {c: client_features.groupBy(c).count().orderBy("count", ascending=False).first()[0] for c in categorical_features}
+train_ds = lgb.Dataset(train_pd[feature_cols], label=train_pd[label_col])
+val_ds   = lgb.Dataset(val_pd[feature_cols], label=val_pd[label_col])
 
-train_filled = train_merged
-for f in numeric_features:
-    train_filled = train_filled.withColumn(f, when(col(f).isNull(), lit(0)).otherwise(col(f)))
-for f in categorical_features:
-    train_filled = train_filled.withColumn(f, when(col(f).isNull(), lit(mode_dict[f])).otherwise(col(f)))
+params = {
+    "objective": "multiclass",
+    "num_class": 7,
+    "metric": "multi_logloss",
+    "boosting_type": "gbdt",
+    "learning_rate": 0.05,
+    "num_leaves": 64,
+    "max_depth": -1,
+    "min_data_in_leaf": 50,
+    "feature_fraction": 0.8,
+    "subsample": 0.8,
+    "subsample_freq": 1,
+    "lambda_l2": 2.0,
+    "verbosity": -1
+}
 
-# quick fill: numeric → 0, string → "UNKNOWN"
-train_filled = train_merged.fillna(0).fillna("UNKNOWN")
-val_filled = val_merged.fillna(0).fillna("UNKNOWN")
-test_filled = test_merged.fillna(0).fillna("UNKNOWN")
+model = lgb.train(
+    params,
+    train_ds,
+    valid_sets=[train_ds, val_ds],
+    valid_names=["train", "val"],
+    num_boost_round=2000,
+    early_stopping_rounds=50
+)
+from sklearn.metrics import f1_score, accuracy_score
+
+test_pred_prob = model.predict(test_pd[feature_cols])
+test_pred = test_pred_prob.argmax(axis=1)
+
+acc = accuracy_score(test_pd[label_col], test_pred)
+f1 = f1_score(test_pd[label_col], test_pred, average="weighted")
+
+print("Test Accuracy:", acc)
+print("Test F1 Score:", f1)
