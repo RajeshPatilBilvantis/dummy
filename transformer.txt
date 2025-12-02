@@ -1,3 +1,44 @@
+from pyspark.sql import functions as F
+
+# static and financial features to merge
+feature_cols = [
+    "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
+    "branchoffice_code",
+    "wc_total_assets", "wc_assetmix_stocks", "wc_assetmix_bonds", 
+    "wc_assetmix_mutual_funds", "wc_assetmix_annuity", "wc_assetmix_deposits",
+    "wc_assetmix_other_assets",
+    "acct_val_amt", "face_amt", "cash_val_amt"
+]
+
+# take last known feature snapshot per customer
+from pyspark.sql.window import Window
+w = Window.partitionBy("cont_id").orderBy(F.col("register_date_ts").desc())
+
+client_features = (
+    sample_df
+    .withColumn("rn", F.row_number().over(w))
+    .filter("rn = 1")
+    .select(["cont_id"] + feature_cols)
+)
+
+# attach these features to seq training parquet
+train = spark.read.parquet("/dbfs/tmp/seqs_parquet/train")
+val   = spark.read.parquet("/dbfs/tmp/seqs_parquet/val")
+test  = spark.read.parquet("/dbfs/tmp/seqs_parquet/test")
+
+train = train.join(client_features, "cont_id", "left")
+val   = val.join(client_features, "cont_id", "left")
+test  = test.join(client_features, "cont_id", "left")
+
+train.write.mode("overwrite").parquet("/dbfs/tmp/seqs_parquet/train_aug")
+val.write.mode("overwrite").parquet("/dbfs/tmp/seqs_parquet/val_aug")
+test.write.mode("overwrite").parquet("/dbfs/tmp/seqs_parquet/test_aug")
+
+print("Merged static + financial features")
+print(train.count(), val.count(), test.count())
+
+
+
 Using columns: 25 -> ['cont_id', 'axa_party_id', 'policy_no', 'register_date', 'product_category', 'prod_lob', 'sub_product_level_1', 'sub_product_level_2', 'acct_val_amt', 'face_amt', 'cash_val_amt', 'wc_total_assets', 'wc_assetmix_stocks', 'wc_assetmix_bonds', 'wc_assetmix_mutual_funds', 'wc_assetmix_annuity', 'wc_assetmix_deposits', 'wc_assetmix_other_assets', 'psn_age', 'client_seg', 'client_seg_1', 'aum_band', 'channel', 'agent_segment', 'branchoffice_code']
 Sampling fraction: 0.2
 Event rows after filter (approx): 48016116
