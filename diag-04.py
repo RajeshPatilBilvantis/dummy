@@ -392,3 +392,62 @@ print("Confusion matrix shape:", cm.shape)
 # ------------- 17) Save model (optional) -------------
 # model.save_model("/dbfs/tmp/next_product_lgb.txt")
 print("Done.")
+
+
+# ------------------------------------------
+# FINAL PREDICTION TABLE WITH DEMOGRAPHICS
+# ------------------------------------------
+
+# Convert back to Spark to join demographic info
+test_results_pd = test_pd.copy()
+test_results_pd["pred_class_id"] = test_pred
+test_results_pd["pred_product"] = test_results_pd["pred_class_id"].map(id2prod)
+test_results_pd["pred_prob"] = test_pred_prob.max(axis=1)
+
+# Add probability columns: prob_0, prob_1 ...
+for i in range(test_pred_prob.shape[1]):
+    test_results_pd[f"prob_{i}"] = test_pred_prob[:, i]
+
+# Convert back to Spark
+test_results_spark = spark.createDataFrame(test_results_pd)
+
+# Select demographic/personal columns from df_events snapshot
+demo_cols = [
+    "cont_id",
+    "psn_age", "client_seg", "client_seg_1",
+    "aum_band", "channel", "agent_segment", "branchoffice_code"
+]
+
+# Build snapshot of demographics
+demo_snapshot = (
+    df_events
+    .withColumn("rnk", F.row_number().over(Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())))
+    .filter("rnk = 1")
+    .select(demo_cols)
+)
+
+# Join predictions with demographics
+final_pred = (
+    test_results_spark
+    .join(demo_snapshot, on="cont_id", how="left")
+)
+
+# Reorder columns cleanly
+prob_cols = [c for c in final_pred.columns if c.startswith("prob_")]
+
+final_cols = [
+    "cont_id",
+    "pred_class_id",
+    "pred_product",
+    "pred_prob",
+] + prob_cols + demo_cols[1:]  # skip cont_id duplicate
+
+final_pred = final_pred.select(final_cols)
+
+# SHOW RESULT
+display(final_pred)
+
+# Save to CSV if needed
+final_pred.toPandas().to_csv("/dbfs/tmp/final_next_product_predictions.csv", index=False)
+print("Saved final prediction table.")
+
