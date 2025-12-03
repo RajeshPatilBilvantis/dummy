@@ -1,3 +1,54 @@
+print("prod_list =", prod_list)
+print("prod2id =", prod2id)
+print("label_map =", label_map)
+print("id2prod =", id2prod)
+
+import numpy as np
+import pandas as pd
+
+# ------- rebuild id → product name mapping correctly -------
+# label_map maps original product_id -> model_label_id (0..num_classes-1)
+# We invert it:
+
+inv_label_map = {v: k for k, v in label_map.items()}
+
+# id2prod maps original product_id -> product_name
+# So final mapping model_class_id -> product_name:
+final_id2prod = {model_id: id2prod[original_id] for model_id, original_id in inv_label_map.items()}
+
+print("FINAL CLASS MAPPING (model output -> product name):")
+print(final_id2prod)
+
+# ------- 1) Predict probabilities -------
+probs = model.predict(test_pd[feature_cols_final])
+
+# ------- 2) Predicted class ID (0..K-1) -------
+pred_class_ids = np.argmax(probs, axis=1)
+
+# ------- 3) Convert to product names -------
+test_pd["pred_class_id"] = pred_class_ids
+test_pd["pred_product"] = test_pd["pred_class_id"].apply(lambda x: final_id2prod[x])
+
+# ------- 4) Add probability columns -------
+num_classes = probs.shape[1]
+for i in range(num_classes):
+    test_pd[f"prob_{i}"] = probs[:, i]
+
+# Add probability of predicted class
+test_pd["pred_prob"] = test_pd.apply(lambda r: r[f"prob_{r['pred_class_id']}"], axis=1)
+
+# ------- 5) Final clean table -------
+prediction_cols = (
+    ["cont_id", "pred_class_id", "pred_product", "pred_prob"] +
+    [f"prob_{i}" for i in range(num_classes)]
+)
+
+final_predictions = test_pd[prediction_cols]
+final_predictions.head()
+
+final_predictions_spark = spark.createDataFrame(final_predictions)
+final_predictions_spark.write.mode("overwrite").parquet("/dbfs/tmp/predictions/next_product_recommendations")
+
 Training until validation scores don't improve for 50 rounds
 Early stopping, best iteration is:
 [478]	train's multi_logloss: 0.59743	val's multi_logloss: 0.678443
