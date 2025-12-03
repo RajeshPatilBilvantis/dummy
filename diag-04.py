@@ -1,3 +1,29 @@
+Training until validation scores don't improve for 50 rounds
+Early stopping, best iteration is:
+[478]	train's multi_logloss: 0.59743	val's multi_logloss: 0.678443
+
+Test Accuracy: 0.7457049429920933
+Test F1 weighted: 0.7424291660510403
+Test F1 macro: 0.5690433376747243
+Classification report:
+              precision    recall  f1-score   support
+
+           0       0.72      0.56      0.63       371
+           1       0.00      0.00      0.00        29
+           2       0.73      0.74      0.74     15251
+           3       0.76      0.77      0.77     13855
+           4       0.74      0.68      0.71     10966
+           5       0.58      0.26      0.36      1227
+           6       0.75      0.82      0.79     16100
+
+    accuracy                           0.75     57799
+   macro avg       0.61      0.55      0.57     57799
+weighted avg       0.74      0.75      0.74     57799
+
+Confusion matrix shape: (7, 7)
+Done.
+
+
 # ------------- PARAMETERS -------------
 SAMPLE_FRACTION = 0.2   # set None to use full data (be careful with memory)
 MIN_EVENTS = 2          # minimum number of prior events to produce an example (2 => at least 1 history item + label)
