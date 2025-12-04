@@ -1,376 +1,142 @@
 # ============================================
-# PREDICTIONS FOR BRANCH OFFICE 83 - MOST RECENT BUSINESS_MONTH
+# SHAP ANALYSIS FOR MODEL INTERPRETABILITY
 # ============================================
 
-from pyspark.sql import functions as F, Window
-from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
-import numpy as np
-import pandas as pd
-from collections import Counter
+import shap
+import matplotlib.pyplot as plt
 
-# ------------- 1) Load filtered data: branchoffice_code='83' and most recent business_month -------------
-df_pred_raw = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+# Note: SHAP can be memory intensive, so we'll use a sample of the data
+# Use test set for SHAP analysis (or a sample of predictions)
+shap_sample_size = min(100, len(test_pd))  # Use up to 100 samples for SHAP
+shap_data = test_pd[feature_cols_final].iloc[:shap_sample_size].copy()
 
-# Apply product_category transformation (same as training)
-df_pred_raw = df_pred_raw.withColumn(
-    "product_category",
-    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_2").isin(
-        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
-        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
-        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
-    ), "LIFE_INSURANCE")
-    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
-    .when(F.col("sub_product_level_1").isin(
-        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
-        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
-    ), "RETIREMENT")
-    .when(
-        (F.col("sub_product_level_2").like("%403B%")) |
-        (F.col("sub_product_level_2").like("%401%")) |
-        (F.col("sub_product_level_2").like("%IRA%")) |
-        (F.col("sub_product_level_2").like("%SEP%")),
-        "RETIREMENT"
+print(f"Computing SHAP values for {len(shap_data)} samples...")
+print(f"Number of features: {len(feature_cols_final)}")
+
+# Create SHAP explainer for LightGBM
+# TreeExplainer is optimized for tree-based models like LightGBM
+explainer = shap.TreeExplainer(model)
+
+# Calculate SHAP values
+shap_values = explainer.shap_values(shap_data)
+
+print(f"SHAP values shape: {np.array(shap_values).shape}")
+print(f"Number of classes: {len(shap_values)}")
+
+# ------------- 1) Summary Plot (overall feature importance) -------------
+print("\n=== SHAP Summary Plot ===")
+# For multiclass, we can plot for each class or use mean absolute SHAP values
+# Let's create a summary plot using mean absolute SHAP across all classes
+shap_values_mean = np.mean([np.abs(sv) for sv in shap_values], axis=0)
+
+# Create a summary plot
+plt.figure(figsize=(12, 8))
+shap.summary_plot(shap_values, shap_data, plot_type="bar", max_display=20, show=False)
+plt.title("SHAP Feature Importance (Mean |SHAP value| across all classes)")
+plt.tight_layout()
+plt.show()
+
+# ------------- 2) Summary Plot (detailed) -------------
+print("\n=== SHAP Summary Plot (Detailed) ===")
+# Show how each feature affects predictions
+plt.figure(figsize=(12, 10))
+shap.summary_plot(shap_values, shap_data, max_display=20, show=False)
+plt.title("SHAP Summary Plot - Feature Impact on Predictions")
+plt.tight_layout()
+plt.show()
+
+# ------------- 3) Feature Importance by Class -------------
+print("\n=== SHAP Feature Importance by Class ===")
+class_names = [final_id2prod.get(i, f"Class_{i}") for i in range(len(shap_values))]
+
+fig, axes = plt.subplots(len(shap_values), 1, figsize=(12, 6*len(shap_values)))
+if len(shap_values) == 1:
+    axes = [axes]
+
+for idx, (sv, class_name) in enumerate(zip(shap_values, class_names)):
+    shap.summary_plot(sv, shap_data, plot_type="bar", max_display=15, show=False, ax=axes[idx])
+    axes[idx].set_title(f"SHAP Feature Importance - {class_name}")
+    
+plt.tight_layout()
+plt.show()
+
+# ------------- 4) Waterfall Plot for a few examples -------------
+print("\n=== SHAP Waterfall Plot (Sample Predictions) ===")
+# Show detailed explanation for a few individual predictions
+num_examples = min(3, len(shap_data))
+
+for example_idx in range(num_examples):
+    print(f"\n--- Example {example_idx + 1} ---")
+    print(f"Actual class: {test_pd.iloc[example_idx]['label0']} ({final_id2prod.get(test_pd.iloc[example_idx]['label0'], 'Unknown')})")
+    print(f"Predicted class: {test_pred[example_idx]} ({final_id2prod.get(test_pred[example_idx], 'Unknown')})")
+    print(f"Prediction probability: {test_pred_prob[example_idx][test_pred[example_idx]]:.4f}")
+    
+    # Get SHAP values for the predicted class
+    pred_class = test_pred[example_idx]
+    shap_values_example = shap_values[pred_class][example_idx]
+    
+    # Create waterfall plot
+    plt.figure(figsize=(10, 6))
+    shap.waterfall_plot(
+        shap.Explanation(
+            values=shap_values_example,
+            base_values=explainer.expected_value[pred_class],
+            data=shap_data.iloc[example_idx].values,
+            feature_names=feature_cols_final
+        ),
+        max_display=15,
+        show=False
     )
-    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
-    .when(F.col("sub_product_level_1").isin(
-        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
-        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
-        "ADVISORY", "CASH SOLICITOR"
-    ), "INVESTMENT")
-    .when(
-        (F.col("sub_product_level_2").like("%Investment%")) |
-        (F.col("sub_product_level_2").like("%Brokerage%")) |
-        (F.col("sub_product_level_2").like("%Advisory%")),
-        "INVESTMENT"
-    )
-    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
-    .when(
-        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
-        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
-        "NETWORK_PRODUCTS"
-    )
-    .when(
-        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
-        "DISABILITY"
-    )
-    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
-    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
-    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
-    .otherwise("OTHER")
-)
+    plt.title(f"SHAP Waterfall Plot - Example {example_idx + 1}\nPredicted: {final_id2prod.get(pred_class, 'Unknown')}")
+    plt.tight_layout()
+    plt.show()
 
-# Filter for branchoffice_code = '83'
-df_pred_raw = df_pred_raw.filter(F.col("branchoffice_code") == "83")
+# ------------- 5) Feature Importance DataFrame -------------
+print("\n=== SHAP Feature Importance Summary ===")
+# Calculate mean absolute SHAP values for each feature
+feature_importance = {}
+for i, feat in enumerate(feature_cols_final):
+    # Mean absolute SHAP value across all classes and samples
+    importance = np.mean([np.abs(sv[:, i]) for sv in shap_values])
+    feature_importance[feat] = importance
 
-# Get most recent business_month
-max_business_month = df_pred_raw.select(F.max("business_month").alias("max_month")).collect()[0]["max_month"]
-print(f"Most recent business_month: {max_business_month}")
+# Sort by importance
+feature_importance_sorted = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
 
-# Filter for most recent business_month
-df_pred_raw = df_pred_raw.filter(F.col("business_month") == max_business_month)
+# Create DataFrame
+shap_importance_df = pd.DataFrame(feature_importance_sorted, columns=['Feature', 'Mean_|SHAP_Value|'])
+shap_importance_df['Rank'] = range(1, len(shap_importance_df) + 1)
 
-print(f"Rows for prediction (branchoffice_code='83', business_month={max_business_month}): {df_pred_raw.count()}")
+print("\nTop 20 Most Important Features:")
+display(shap_importance_df.head(20))
 
-# ------------- 2) Prepare events data (similar to training) -------------
-df_pred_events = df_pred_raw.select(
-    "cont_id", "product_category", "register_date",
-    "acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
-    "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
-    "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
-    "psn_age","client_seg","client_seg_1","aum_band","channel","agent_segment",
-    "branchoffice_code","policy_status", "business_month"
-).filter(
-    (F.col("cont_id").isNotNull()) &
-    (F.col("register_date").isNotNull()) &
-    (F.col("product_category").isNotNull())
-)
+# ------------- 6) Partial Dependence Plots for Top Features -------------
+print("\n=== SHAP Partial Dependence Plots (Top 5 Features) ===")
+top_features = shap_importance_df.head(5)['Feature'].tolist()
 
-# Keep only Active policies
-df_pred_events = df_pred_events.filter(F.col("policy_status") == "Active")
+for feat in top_features:
+    if feat in shap_data.columns:
+        plt.figure(figsize=(10, 6))
+        shap.plots.partial_dependence(
+            feat, model.predict, shap_data[[feat]], ice=False,
+            model_expected_value=True, feature_expected_value=True, show=False
+        )
+        plt.title(f"Partial Dependence Plot - {feat}")
+        plt.tight_layout()
+        plt.show()
 
-# Order events per user
-df_pred_events = df_pred_events.withColumn("register_ts", F.to_timestamp("register_date"))
-w_pred = Window.partitionBy("cont_id").orderBy("register_ts")
-df_pred_events = df_pred_events.withColumn("event_idx", F.row_number().over(w_pred))
+# ------------- 7) SHAP Values Statistics -------------
+print("\n=== SHAP Values Statistics ===")
+print(f"SHAP values computed for {len(shap_data)} samples")
+print(f"Number of features: {len(feature_cols_final)}")
+print(f"Number of classes: {len(shap_values)}")
 
-# ------------- 3) Build sequences for prediction (need full history up to prediction point) -------------
-# For prediction, we need to get the full history for each client up to the most recent business_month
-# We'll use ALL historical events (not just from the filtered month) to build sequences
+# Calculate statistics per class
+for idx, class_name in enumerate(class_names):
+    sv_class = shap_values[idx]
+    print(f"\n{class_name}:")
+    print(f"  Mean |SHAP value|: {np.mean(np.abs(sv_class)):.6f}")
+    print(f"  Max |SHAP value|: {np.max(np.abs(sv_class)):.6f}")
+    print(f"  Expected value (base): {explainer.expected_value[idx]:.6f}")
 
-# Get all historical events for clients in branchoffice_code='83' (for sequence building)
-df_all_hist = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
-df_all_hist = df_all_hist.withColumn(
-    "product_category",
-    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_2").isin(
-        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
-        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
-        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
-    ), "LIFE_INSURANCE")
-    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
-    .when(F.col("sub_product_level_1").isin(
-        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
-        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
-    ), "RETIREMENT")
-    .when(
-        (F.col("sub_product_level_2").like("%403B%")) |
-        (F.col("sub_product_level_2").like("%401%")) |
-        (F.col("sub_product_level_2").like("%IRA%")) |
-        (F.col("sub_product_level_2").like("%SEP%")),
-        "RETIREMENT"
-    )
-    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
-    .when(F.col("sub_product_level_1").isin(
-        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
-        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
-        "ADVISORY", "CASH SOLICITOR"
-    ), "INVESTMENT")
-    .when(
-        (F.col("sub_product_level_2").like("%Investment%")) |
-        (F.col("sub_product_level_2").like("%Brokerage%")) |
-        (F.col("sub_product_level_2").like("%Advisory%")),
-        "INVESTMENT"
-    )
-    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
-    .when(
-        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
-        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
-        "NETWORK_PRODUCTS"
-    )
-    .when(
-        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
-        "DISABILITY"
-    )
-    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
-    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
-    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
-    .otherwise("OTHER")
-)
-
-# Get list of cont_ids we need to predict for
-cont_ids_to_predict = [r["cont_id"] for r in df_pred_events.select("cont_id").distinct().collect()]
-
-# Filter historical data for these clients and events up to (and including) the prediction month
-df_all_hist = df_all_hist.filter(
-    (F.col("cont_id").isin(cont_ids_to_predict)) &
-    (F.col("branchoffice_code") == "83") &
-    (F.col("cont_id").isNotNull()) &
-    (F.col("register_date").isNotNull()) &
-    (F.col("product_category").isNotNull()) &
-    (F.col("policy_status") == "Active")
-)
-
-# Filter events up to and including the prediction business_month
-df_all_hist = df_all_hist.filter(F.col("business_month") <= max_business_month)
-
-# Order events per user
-df_all_hist = df_all_hist.withColumn("register_ts", F.to_timestamp("register_date"))
-w_hist = Window.partitionBy("cont_id").orderBy("register_ts")
-df_all_hist = df_all_hist.withColumn("event_idx", F.row_number().over(w_hist))
-
-print(f"Historical events for prediction clients: {df_all_hist.count()}")
-
-# ------------- 4) Build sequences for prediction (one prediction per client) -------------
-# Create RDD of (cont_id, (event_idx, product_category))
-rdd_pred = df_all_hist.select("cont_id","event_idx","product_category").rdd.map(
-    lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"]))
-)
-
-# Group by cont_id
-grouped_pred = rdd_pred.groupByKey().mapValues(
-    lambda evs: [p for _, p in sorted(list(evs), key=lambda x: x[0])]
-)
-
-# Remove consecutive duplicates
-def dedupe_consecutive(seq):
-    if not seq:
-        return []
-    out = [seq[0]]
-    for x in seq[1:]:
-        if x != out[-1]:
-            out.append(x)
-    return out
-
-grouped_pred = grouped_pred.mapValues(dedupe_consecutive).filter(lambda kv: len(kv[1]) >= 1)  # At least 1 event
-
-print(f"Users with sequences for prediction: {grouped_pred.count()}")
-
-# ------------- 5) Create prediction examples (one per client, using full history) -------------
-def make_prediction_examples(kv):
-    cont_id, seq = kv
-    # Map to ids using the same prod2id mapping from training
-    seq_ids = [prod2id.get(x, 0) for x in seq]
-    if len(seq_ids) == 0:
-        return []
-    # Use full history (up to MAX_SEQ_LEN) for prediction
-    history = seq_ids[-MAX_SEQ_LEN:] if len(seq_ids) > MAX_SEQ_LEN else seq_ids
-    return [(str(cont_id), history)]
-
-pred_examples_rdd = grouped_pred.flatMap(make_prediction_examples)
-
-# Convert to DataFrame
-pred_schema = StructType([
-    StructField("cont_id", StringType(), True),
-    StructField("hist_seq", ArrayType(IntegerType()), True),
-])
-pred_examples_df = spark.createDataFrame(pred_examples_rdd, pred_schema).cache()
-
-print(f"Prediction examples: {pred_examples_df.count()}")
-
-# ------------- 6) Create features for prediction (same as training) -------------
-def hist_to_features_row_pred(x):
-    cont_id, hist = x
-    seq_len = len(hist)
-    last_1 = hist[-1] if seq_len >= 1 else 0
-    last_2 = hist[-2] if seq_len >= 2 else 0
-    unique_prior = len(set(hist))
-    num_switches = sum(1 for i in range(1, seq_len) if hist[i] != hist[i-1])
-    freq = Counter(hist)
-    freq_features = [freq.get(i, 0) for i in range(1, NUM_CLASSES+1)]
-    return (str(cont_id), hist, seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
-
-rows_pred_rdd = pred_examples_rdd.map(hist_to_features_row_pred)
-
-from pyspark.sql.types import ArrayType, LongType
-feat_pred_schema = StructType([
-    StructField("cont_id", StringType(), True),
-    StructField("hist_seq", ArrayType(IntegerType()), True),
-    StructField("seq_len", IntegerType(), True),
-    StructField("last_1", IntegerType(), True),
-    StructField("last_2", IntegerType(), True),
-    StructField("unique_prior", IntegerType(), True),
-    StructField("num_switches", IntegerType(), True),
-    StructField("freq_list", ArrayType(IntegerType()), True),
-])
-
-pred_feats_df = spark.createDataFrame(rows_pred_rdd, feat_pred_schema).cache()
-
-# Expand freq_list into separate columns
-for i in range(1, NUM_CLASSES+1):
-    pred_feats_df = pred_feats_df.withColumn(f"freq_{i}", F.col("freq_list")[i-1])
-pred_feats_df = pred_feats_df.drop("freq_list")
-
-# ------------- 7) Join with static features from most recent snapshot -------------
-w2_pred = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
-client_snapshot_pred = (df_pred_events
-                       .withColumn("rn", F.row_number().over(w2_pred))
-                       .filter(F.col("rn") == 1)
-                       .select("cont_id",
-                               "acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
-                               "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
-                               "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
-                               "psn_age","client_seg","client_seg_1","aum_band","channel","agent_segment","branchoffice_code", "business_month"))
-
-pred_full = pred_feats_df.join(client_snapshot_pred, on="cont_id", how="inner")
-
-print(f"Prediction examples after join: {pred_full.count()}")
-
-# ------------- 8) Fill missing values (same as training) -------------
-numeric_cols_pred = [c for c, t in pred_full.dtypes if t in ("int", "double", "bigint", "float") and c not in ("seq_len","last_1","last_2","unique_prior","num_switches")]
-fill_dict_pred = {c: 0 for c in numeric_cols_pred}
-
-categorical_cols = ["client_seg","client_seg_1","aum_band","channel","agent_segment","branchoffice_code"]
-modes_pred = {}
-for c in categorical_cols:
-    try:
-        m = pred_full.groupBy(c).count().orderBy(F.desc("count")).first()
-        modes_pred[c] = m[0] if m and m[0] is not None else "UNKNOWN"
-    except:
-        modes_pred[c] = "UNKNOWN"
-
-pred_full = pred_full.fillna(fill_dict_pred)
-for c in categorical_cols:
-    pred_full = pred_full.withColumn(c, F.when(F.col(c).isNull(), F.lit(modes_pred[c])).otherwise(F.col(c)))
-
-# ------------- 9) Convert hist_seq to fixed-length padded columns -------------
-def pad_history(hist):
-    arr = hist[-MAX_SEQ_LEN:] if hist is not None else []
-    pad_len = MAX_SEQ_LEN - len(arr)
-    return [0]*pad_len + arr
-
-pad_udf = F.udf(lambda x: pad_history(x), ArrayType(IntegerType()))
-pred_full = pred_full.withColumn("hist_padded", pad_udf(F.col("hist_seq")))
-
-for i in range(MAX_SEQ_LEN):
-    pred_full = pred_full.withColumn(f"hist_{i}", F.col("hist_padded")[i])
-
-pred_full = pred_full.drop("hist_seq", "hist_padded")
-
-# ------------- 10) Convert categorical strings to index (same as training) -------------
-# Use the same categorical mappings from training (we need to recreate them or use broadcast)
-# For now, we'll recreate the mappings from pred_full
-for c in categorical_cols:
-    vals = [r[0] for r in pred_full.select(c).distinct().collect()]
-    m = {v:i for i,v in enumerate(sorted([str(x) for x in vals]))}
-    b = spark.sparkContext.broadcast(m)
-    pred_full = pred_full.withColumn(c + "_idx", F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN")))
-    pred_full = pred_full.withColumn(c + "_idx", F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(F.col(c + "_idx")))
-
-# ------------- 11) Convert to Pandas and prepare for prediction -------------
-pred_pd = pred_full.select(["cont_id", "business_month"] + model_feature_cols).toPandas()
-pred_pd.fillna(0, inplace=True)
-
-print(f"Prediction data shape: {pred_pd.shape}")
-
-# ------------- 12) Make predictions -------------
-pred_probs = model.predict(pred_pd[feature_cols_final])
-pred_class_ids = np.argmax(pred_probs, axis=1)
-
-# Convert to product names using the same mapping from training
-inv_label_map = {v: k for k, v in label_map.items()}
-final_id2prod = {model_id: id2prod[original_id] for model_id, original_id in inv_label_map.items()}
-
-pred_pd["pred_class_id"] = pred_class_ids
-pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(lambda x: final_id2prod.get(x, "UNKNOWN"))
-
-# Add probability columns
-num_classes_pred = pred_probs.shape[1]
-for i in range(num_classes_pred):
-    pred_pd[f"prob_{i}"] = pred_probs[:, i]
-pred_pd["pred_prob"] = pred_pd.apply(lambda r: r[f"prob_{r['pred_class_id']}"], axis=1)
-
-
-# ------------- 13) Add additional client information -------------
-from pyspark.sql.functions import to_date, current_date, datediff, round as spark_round
-
-axa_map_df_pred = (
-    df_pred_raw
-    .withColumn("client_tenure", spark_round(datediff(current_date(), to_date("register_date")) / 365.25, 2))
-    .select(
-        "cont_id", "axa_party_id", "product_category", "psn_age", "client_seg", "client_seg_1",
-        "aum_band", "channel", "division_name", "branch_name", "business_city", "business_state_cod", "client_tenure"
-    )
-    .dropDuplicates(["cont_id"])
-)
-
-axa_map_pd_pred = axa_map_df_pred.toPandas().drop_duplicates("cont_id")
-
-# Ensure psn_age is present in both DataFrames and handle column suffixes if duplicated after merge
-final_predictions = pred_pd.merge(axa_map_pd_pred, on="cont_id", how="left", suffixes=("", "_dem"))
-
-# If both pred_pd and axa_map_pd_pred have psn_age, pandas will add suffixes. Prefer the demographic version if present.
-if "psn_age_dem" in final_predictions.columns:
-    final_predictions["psn_age"] = final_predictions["psn_age_dem"]
-    final_predictions = final_predictions.drop(columns=["psn_age_dem"])
-
-# Select final columns
-prob_cols_final = [c for c in final_predictions.columns if c.startswith("prob_")]
-final_cols_list = [
-    "cont_id", "axa_party_id", "product_category", "psn_age", "client_seg", "client_seg_1",
-    "aum_band", "channel", "division_name", "branch_name", "business_city", "business_state_cod", "client_tenure",
-    "pred_class_id", "pred_product", "pred_prob"
-] + prob_cols_final
-
-final_predictions = final_predictions[final_cols_list]
-
-print(f"\nFinal predictions shape: {final_predictions.shape}")
-print(f"\nFinal predictions sample:")
-display(final_predictions.head(10))
-
-print("\nPrediction summary:")
-print(final_predictions["pred_product"].value_counts())
+print("\nSHAP Analysis Complete!")
