@@ -332,34 +332,39 @@ pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(lambda x: final_id2prod
 num_classes_pred = pred_probs.shape[1]
 for i in range(num_classes_pred):
     pred_pd[f"prob_{i}"] = pred_probs[:, i]
-
 pred_pd["pred_prob"] = pred_pd.apply(lambda r: r[f"prob_{r['pred_class_id']}"], axis=1)
 
-# ------------- 13) Add additional client information -------------
-demo_cols_pred = [
-    "cont_id",
-    "psn_age", "client_seg", "client_seg_1",
-    "aum_band", "channel", "agent_segment", "branchoffice_code"
-]
 
-demo_snapshot_pred = (
-    df_pred_events
-    .withColumn("rnk", F.row_number().over(Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())))
-    .filter("rnk = 1")
-    .select([F.col("cont_id")] + [F.col(c) for c in demo_cols_pred[1:]])
+# ------------- 13) Add additional client information -------------
+from pyspark.sql.functions import to_date, current_date, datediff, round as spark_round
+
+axa_map_df_pred = (
+    df_pred_raw
+    .withColumn("client_tenure", spark_round(datediff(current_date(), to_date("register_date")) / 365.25, 2))
+    .select(
+        "cont_id", "axa_party_id", "product_category", "psn_age", "client_seg", "client_seg_1",
+        "aum_band", "channel", "division_name", "branch_name", "business_city", "business_state_cod", "client_tenure"
+    )
+    .dropDuplicates(["cont_id"])
 )
 
-demo_pred_pd = demo_snapshot_pred.toPandas()
+axa_map_pd_pred = axa_map_df_pred.toPandas().drop_duplicates("cont_id")
 
-# Merge predictions with demographics
-final_predictions = pred_pd.merge(demo_pred_pd, on="cont_id", how="left")
+# Ensure psn_age is present in both DataFrames and handle column suffixes if duplicated after merge
+final_predictions = pred_pd.merge(axa_map_pd_pred, on="cont_id", how="left", suffixes=("", "_dem"))
+
+# If both pred_pd and axa_map_pd_pred have psn_age, pandas will add suffixes. Prefer the demographic version if present.
+if "psn_age_dem" in final_predictions.columns:
+    final_predictions["psn_age"] = final_predictions["psn_age_dem"]
+    final_predictions = final_predictions.drop(columns=["psn_age_dem"])
 
 # Select final columns
 prob_cols_final = [c for c in final_predictions.columns if c.startswith("prob_")]
 final_cols_list = [
-    "cont_id", "business_month",
-    "pred_class_id", "pred_product", "pred_prob",
-] + prob_cols_final + demo_cols_pred[1:]
+    "cont_id", "axa_party_id", "product_category", "psn_age", "client_seg", "client_seg_1",
+    "aum_band", "channel", "division_name", "branch_name", "business_city", "business_state_cod", "client_tenure",
+    "pred_class_id", "pred_product", "pred_prob"
+] + prob_cols_final
 
 final_predictions = final_predictions[final_cols_list]
 
