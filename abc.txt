@@ -1,91 +1,371 @@
-0:	learn: 0.5890822	test: 0.5436404	best: 0.5436404 (0)	total: 1.01s	remaining: 33m 45s
-100:	learn: 0.6934915	test: 0.6243590	best: 0.6243590 (100)	total: 1m 21s	remaining: 25m 32s
-200:	learn: 0.7161553	test: 0.6420967	best: 0.6421369 (199)	total: 2m 44s	remaining: 24m 28s
-300:	learn: 0.7262047	test: 0.6490399	best: 0.6490884 (298)	total: 4m 4s	remaining: 23m
-400:	learn: 0.7325734	test: 0.6529383	best: 0.6529801 (398)	total: 5m 25s	remaining: 21m 39s
-500:	learn: 0.7369479	test: 0.6559086	best: 0.6559086 (500)	total: 6m 42s	remaining: 20m 4s
-600:	learn: 0.7404941	test: 0.6594923	best: 0.6594923 (600)	total: 7m 59s	remaining: 18m 36s
-700:	learn: 0.7435882	test: 0.6619023	best: 0.6619023 (700)	total: 9m 19s	remaining: 17m 16s
-800:	learn: 0.7460470	test: 0.6640801	best: 0.6640801 (800)	total: 10m 40s	remaining: 15m 58s
-900:	learn: 0.7482039	test: 0.6656242	best: 0.6656685 (896)	total: 11m 57s	remaining: 14m 35s
-1000:	learn: 0.7500720	test: 0.6674634	best: 0.6674634 (1000)	total: 13m 16s	remaining: 13m 14s
-1100:	learn: 0.7517213	test: 0.6686648	best: 0.6686752 (1098)	total: 14m 36s	remaining: 11m 55s
-1200:	learn: 0.7534690	test: 0.6695493	best: 0.6695724 (1194)	total: 15m 55s	remaining: 10m 35s
-1300:	learn: 0.7549754	test: 0.6700065	best: 0.6700688 (1278)	total: 17m 13s	remaining: 9m 15s
-1400:	learn: 0.7563688	test: 0.6707856	best: 0.6709343 (1387)	total: 18m 32s	remaining: 7m 55s
-1500:	learn: 0.7576612	test: 0.6714439	best: 0.6715028 (1496)	total: 19m 52s	remaining: 6m 36s
-1600:	learn: 0.7589125	test: 0.6721822	best: 0.6721822 (1600)	total: 21m 14s	remaining: 5m 17s
-1700:	learn: 0.7599913	test: 0.6726183	best: 0.6727505 (1683)	total: 22m 35s	remaining: 3m 58s
-1800:	learn: 0.7611902	test: 0.6733419	best: 0.6734595 (1795)	total: 23m 57s	remaining: 2m 38s
-1900:	learn: 0.7623633	test: 0.6739788	best: 0.6739959 (1899)	total: 25m 16s	remaining: 1m 18s
-1999:	learn: 0.7633667	test: 0.6743500	best: 0.6744213 (1988)	total: 26m 37s	remaining: 0us
+# ============================================
+# PREDICTIONS FOR BRANCH OFFICE 83 - MOST RECENT BUSINESS_MONTH
+# ============================================
 
-bestTest = 0.6744213366
-bestIteration = 1988
+from pyspark.sql import functions as F, Window
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
+import numpy as np
+import pandas as pd
+from collections import Counter
 
-Shrink model to first 1989 iterations.
-Regularized CatBoost model trained
+# ------------- 1) Load filtered data: branchoffice_code='83' and most recent business_month -------------
+df_pred_raw = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
 
-=== Model Performance ===
-Macro F1: 0.5201
-Weighted F1: 0.6949
-Accuracy: 0.7086
-Macro Precision: 0.6061
-Macro Recall: 0.5048
+# Apply product_category transformation (same as training)
+df_pred_raw = df_pred_raw.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .otherwise("OTHER")
+)
 
-=== Classification Report ===
-                  precision    recall  f1-score   support
+# Filter for branchoffice_code = '83'
+df_pred_raw = df_pred_raw.filter(F.col("branchoffice_code") == "83")
 
-      INVESTMENT       0.67      0.85      0.75     39543
-  LIFE_INSURANCE       0.72      0.74      0.73     33278
-NETWORK_PRODUCTS       0.49      0.13      0.21      8001
-    OTHER_HEALTH       0.38      0.14      0.20       179
-      RETIREMENT       0.76      0.67      0.71     44288
+# Get most recent business_month
+max_business_month = df_pred_raw.select(F.max("business_month").alias("max_month")).collect()[0]["max_month"]
+print(f"Most recent business_month: {max_business_month}")
 
-        accuracy                           0.71    125289
-       macro avg       0.61      0.50      0.52    125289
-    weighted avg       0.70      0.71      0.69    125289
+# Filter for most recent business_month
+df_pred_raw = df_pred_raw.filter(F.col("business_month") == max_business_month)
 
+print(f"Rows for prediction (branchoffice_code='83', business_month={max_business_month}): {df_pred_raw.count()}")
 
-=== Top 20 Feature Importances ===
-                          feature  importance
-23                years_to_second   18.073874
-30        days_since_first_policy   10.984556
-36                  register_year    7.725288
-45   agent_most_common_cross_sell    6.806942
-3                         psn_age    3.803803
-9                   division_name    3.640326
-48        product_age_interaction    3.605422
-8             sub_product_level_2    3.553014
-52      years_product_interaction    3.517985
-49  product_agent_seg_interaction    3.395349
-22            age_at_first_policy    3.307320
-40      agent_p1_cross_sell_count    3.298209
-41     branch_p1_cross_sell_count    2.562124
-7             sub_product_level_1    2.326406
-46               agent_avg_assets    2.070741
-26                   log_face_amt    2.067589
-47        product_aum_interaction    1.691683
-5                    client_seg_1    1.514330
-16       annuity_allocation_ratio    1.123015
-25        log_wc_assetmix_annuity    1.089340
+# ------------- 2) Prepare events data (similar to training) -------------
+df_pred_events = df_pred_raw.select(
+    "cont_id", "product_category", "register_date",
+    "acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
+    "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
+    "psn_age","client_seg","client_seg_1","aum_band","channel","agent_segment",
+    "branchoffice_code","policy_status", "business_month"
+).filter(
+    (F.col("cont_id").isNotNull()) &
+    (F.col("register_date").isNotNull()) &
+    (F.col("product_category").isNotNull())
+)
 
-=== Per-Class Performance Analysis ===
+# Keep only Active policies
+df_pred_events = df_pred_events.filter(F.col("policy_status") == "Active")
 
-Confusion Matrix:
-                  INVESTMENT  LIFE_INSURANCE  ...  OTHER_HEALTH  RETIREMENT
-INVESTMENT             33610            2168  ...             0        3514
-LIFE_INSURANCE          4547           24463  ...            36        3842
-NETWORK_PRODUCTS        2797            2195  ...             0        1967
-OTHER_HEALTH              14             130  ...            25           8
-RETIREMENT              9385            4832  ...             4       29641
+# Order events per user
+df_pred_events = df_pred_events.withColumn("register_ts", F.to_timestamp("register_date"))
+w_pred = Window.partitionBy("cont_id").orderBy("register_ts")
+df_pred_events = df_pred_events.withColumn("event_idx", F.row_number().over(w_pred))
 
-[5 rows x 5 columns]
+# ------------- 3) Build sequences for prediction (need full history up to prediction point) -------------
+# For prediction, we need to get the full history for each client up to the most recent business_month
+# We'll use ALL historical events (not just from the filtered month) to build sequences
 
-=== Prediction Distribution ===
-                  True Count  Predicted Count  Difference  Difference %
-INVESTMENT             39543            50353       10810         27.34
-LIFE_INSURANCE         33278            33788         510          1.53
-NETWORK_PRODUCTS        8001             2111       -5890        -73.62
-OTHER_HEALTH             179               65        -114        -63.69
-RETIREMENT             44288            38972       -5316        -12.00
+# Get all historical events for clients in branchoffice_code='83' (for sequence building)
+df_all_hist = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+df_all_hist = df_all_hist.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .otherwise("OTHER")
+)
+
+# Get list of cont_ids we need to predict for
+cont_ids_to_predict = [r["cont_id"] for r in df_pred_events.select("cont_id").distinct().collect()]
+
+# Filter historical data for these clients and events up to (and including) the prediction month
+df_all_hist = df_all_hist.filter(
+    (F.col("cont_id").isin(cont_ids_to_predict)) &
+    (F.col("branchoffice_code") == "83") &
+    (F.col("cont_id").isNotNull()) &
+    (F.col("register_date").isNotNull()) &
+    (F.col("product_category").isNotNull()) &
+    (F.col("policy_status") == "Active")
+)
+
+# Filter events up to and including the prediction business_month
+df_all_hist = df_all_hist.filter(F.col("business_month") <= max_business_month)
+
+# Order events per user
+df_all_hist = df_all_hist.withColumn("register_ts", F.to_timestamp("register_date"))
+w_hist = Window.partitionBy("cont_id").orderBy("register_ts")
+df_all_hist = df_all_hist.withColumn("event_idx", F.row_number().over(w_hist))
+
+print(f"Historical events for prediction clients: {df_all_hist.count()}")
+
+# ------------- 4) Build sequences for prediction (one prediction per client) -------------
+# Create RDD of (cont_id, (event_idx, product_category))
+rdd_pred = df_all_hist.select("cont_id","event_idx","product_category").rdd.map(
+    lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"]))
+)
+
+# Group by cont_id
+grouped_pred = rdd_pred.groupByKey().mapValues(
+    lambda evs: [p for _, p in sorted(list(evs), key=lambda x: x[0])]
+)
+
+# Remove consecutive duplicates
+def dedupe_consecutive(seq):
+    if not seq:
+        return []
+    out = [seq[0]]
+    for x in seq[1:]:
+        if x != out[-1]:
+            out.append(x)
+    return out
+
+grouped_pred = grouped_pred.mapValues(dedupe_consecutive).filter(lambda kv: len(kv[1]) >= 1)  # At least 1 event
+
+print(f"Users with sequences for prediction: {grouped_pred.count()}")
+
+# ------------- 5) Create prediction examples (one per client, using full history) -------------
+def make_prediction_examples(kv):
+    cont_id, seq = kv
+    # Map to ids using the same prod2id mapping from training
+    seq_ids = [prod2id.get(x, 0) for x in seq]
+    if len(seq_ids) == 0:
+        return []
+    # Use full history (up to MAX_SEQ_LEN) for prediction
+    history = seq_ids[-MAX_SEQ_LEN:] if len(seq_ids) > MAX_SEQ_LEN else seq_ids
+    return [(str(cont_id), history)]
+
+pred_examples_rdd = grouped_pred.flatMap(make_prediction_examples)
+
+# Convert to DataFrame
+pred_schema = StructType([
+    StructField("cont_id", StringType(), True),
+    StructField("hist_seq", ArrayType(IntegerType()), True),
+])
+pred_examples_df = spark.createDataFrame(pred_examples_rdd, pred_schema).cache()
+
+print(f"Prediction examples: {pred_examples_df.count()}")
+
+# ------------- 6) Create features for prediction (same as training) -------------
+def hist_to_features_row_pred(x):
+    cont_id, hist = x
+    seq_len = len(hist)
+    last_1 = hist[-1] if seq_len >= 1 else 0
+    last_2 = hist[-2] if seq_len >= 2 else 0
+    unique_prior = len(set(hist))
+    num_switches = sum(1 for i in range(1, seq_len) if hist[i] != hist[i-1])
+    freq = Counter(hist)
+    freq_features = [freq.get(i, 0) for i in range(1, NUM_CLASSES+1)]
+    return (str(cont_id), hist, seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+
+rows_pred_rdd = pred_examples_rdd.map(hist_to_features_row_pred)
+
+from pyspark.sql.types import ArrayType, LongType
+feat_pred_schema = StructType([
+    StructField("cont_id", StringType(), True),
+    StructField("hist_seq", ArrayType(IntegerType()), True),
+    StructField("seq_len", IntegerType(), True),
+    StructField("last_1", IntegerType(), True),
+    StructField("last_2", IntegerType(), True),
+    StructField("unique_prior", IntegerType(), True),
+    StructField("num_switches", IntegerType(), True),
+    StructField("freq_list", ArrayType(IntegerType()), True),
+])
+
+pred_feats_df = spark.createDataFrame(rows_pred_rdd, feat_pred_schema).cache()
+
+# Expand freq_list into separate columns
+for i in range(1, NUM_CLASSES+1):
+    pred_feats_df = pred_feats_df.withColumn(f"freq_{i}", F.col("freq_list")[i-1])
+pred_feats_df = pred_feats_df.drop("freq_list")
+
+# ------------- 7) Join with static features from most recent snapshot -------------
+w2_pred = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
+client_snapshot_pred = (df_pred_events
+                       .withColumn("rn", F.row_number().over(w2_pred))
+                       .filter(F.col("rn") == 1)
+                       .select("cont_id",
+                               "acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
+                               "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
+                               "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
+                               "psn_age","client_seg","client_seg_1","aum_band","channel","agent_segment","branchoffice_code", "business_month"))
+
+pred_full = pred_feats_df.join(client_snapshot_pred, on="cont_id", how="inner")
+
+print(f"Prediction examples after join: {pred_full.count()}")
+
+# ------------- 8) Fill missing values (same as training) -------------
+numeric_cols_pred = [c for c, t in pred_full.dtypes if t in ("int", "double", "bigint", "float") and c not in ("seq_len","last_1","last_2","unique_prior","num_switches")]
+fill_dict_pred = {c: 0 for c in numeric_cols_pred}
+
+categorical_cols = ["client_seg","client_seg_1","aum_band","channel","agent_segment","branchoffice_code"]
+modes_pred = {}
+for c in categorical_cols:
+    try:
+        m = pred_full.groupBy(c).count().orderBy(F.desc("count")).first()
+        modes_pred[c] = m[0] if m and m[0] is not None else "UNKNOWN"
+    except:
+        modes_pred[c] = "UNKNOWN"
+
+pred_full = pred_full.fillna(fill_dict_pred)
+for c in categorical_cols:
+    pred_full = pred_full.withColumn(c, F.when(F.col(c).isNull(), F.lit(modes_pred[c])).otherwise(F.col(c)))
+
+# ------------- 9) Convert hist_seq to fixed-length padded columns -------------
+def pad_history(hist):
+    arr = hist[-MAX_SEQ_LEN:] if hist is not None else []
+    pad_len = MAX_SEQ_LEN - len(arr)
+    return [0]*pad_len + arr
+
+pad_udf = F.udf(lambda x: pad_history(x), ArrayType(IntegerType()))
+pred_full = pred_full.withColumn("hist_padded", pad_udf(F.col("hist_seq")))
+
+for i in range(MAX_SEQ_LEN):
+    pred_full = pred_full.withColumn(f"hist_{i}", F.col("hist_padded")[i])
+
+pred_full = pred_full.drop("hist_seq", "hist_padded")
+
+# ------------- 10) Convert categorical strings to index (same as training) -------------
+# Use the same categorical mappings from training (we need to recreate them or use broadcast)
+# For now, we'll recreate the mappings from pred_full
+for c in categorical_cols:
+    vals = [r[0] for r in pred_full.select(c).distinct().collect()]
+    m = {v:i for i,v in enumerate(sorted([str(x) for x in vals]))}
+    b = spark.sparkContext.broadcast(m)
+    pred_full = pred_full.withColumn(c + "_idx", F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN")))
+    pred_full = pred_full.withColumn(c + "_idx", F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(F.col(c + "_idx")))
+
+# ------------- 11) Convert to Pandas and prepare for prediction -------------
+pred_pd = pred_full.select(["cont_id", "business_month"] + model_feature_cols).toPandas()
+pred_pd.fillna(0, inplace=True)
+
+print(f"Prediction data shape: {pred_pd.shape}")
+
+# ------------- 12) Make predictions -------------
+pred_probs = model.predict(pred_pd[feature_cols_final])
+pred_class_ids = np.argmax(pred_probs, axis=1)
+
+# Convert to product names using the same mapping from training
+inv_label_map = {v: k for k, v in label_map.items()}
+final_id2prod = {model_id: id2prod[original_id] for model_id, original_id in inv_label_map.items()}
+
+pred_pd["pred_class_id"] = pred_class_ids
+pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(lambda x: final_id2prod.get(x, "UNKNOWN"))
+
+# Add probability columns
+num_classes_pred = pred_probs.shape[1]
+for i in range(num_classes_pred):
+    pred_pd[f"prob_{i}"] = pred_probs[:, i]
+
+pred_pd["pred_prob"] = pred_pd.apply(lambda r: r[f"prob_{r['pred_class_id']}"], axis=1)
+
+# ------------- 13) Add additional client information -------------
+demo_cols_pred = [
+    "cont_id",
+    "psn_age", "client_seg", "client_seg_1",
+    "aum_band", "channel", "agent_segment", "branchoffice_code"
+]
+
+demo_snapshot_pred = (
+    df_pred_events
+    .withColumn("rnk", F.row_number().over(Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())))
+    .filter("rnk = 1")
+    .select([F.col("cont_id")] + [F.col(c) for c in demo_cols_pred[1:]])
+)
+
+demo_pred_pd = demo_snapshot_pred.toPandas()
+
+# Merge predictions with demographics
+final_predictions = pred_pd.merge(demo_pred_pd, on="cont_id", how="left")
+
+# Select final columns
+prob_cols_final = [c for c in final_predictions.columns if c.startswith("prob_")]
+final_cols_list = [
+    "cont_id", "business_month",
+    "pred_class_id", "pred_product", "pred_prob",
+] + prob_cols_final + demo_cols_pred[1:]
+
+final_predictions = final_predictions[final_cols_list]
+
+print(f"\nFinal predictions shape: {final_predictions.shape}")
+print(f"\nFinal predictions sample:")
+display(final_predictions.head(10))
+
+print("\nPrediction summary:")
+print(final_predictions["pred_product"].value_counts())
