@@ -1,0 +1,488 @@
+"""
+Preprocessing Pipeline for Wealth Management Product Recommendation Model
+
+This module contains all preprocessing functions needed to transform raw client data
+into features suitable for the LightGBM product recommendation model.
+
+Author: ML Team
+Date: 2025
+"""
+
+from pyspark.sql import functions as F, Window
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
+import numpy as np
+import pandas as pd
+from collections import Counter
+from typing import Dict, List, Tuple, Optional
+
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+MAX_SEQ_LEN = 10  # Maximum sequence length for history features
+MIN_EVENTS = 2    # Minimum number of events required for training examples
+
+
+# ============================================================================
+# PRODUCT CATEGORY MAPPING
+# ============================================================================
+
+def create_product_category_column(df):
+    """
+    Create product_category column from prod_lob, sub_product_level_1, and sub_product_level_2.
+    
+    Args:
+        df: Spark DataFrame with prod_lob, sub_product_level_1, sub_product_level_2 columns
+        
+    Returns:
+        Spark DataFrame with product_category column added
+    """
+    return df.withColumn(
+        "product_category",
+        F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+        .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+        .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+        .when(F.col("sub_product_level_2").isin(
+            "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+            "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+            "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+        ), "LIFE_INSURANCE")
+        .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+        .when(F.col("sub_product_level_1").isin(
+            "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+            "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+        ), "RETIREMENT")
+        .when(
+            (F.col("sub_product_level_2").like("%403B%")) |
+            (F.col("sub_product_level_2").like("%401%")) |
+            (F.col("sub_product_level_2").like("%IRA%")) |
+            (F.col("sub_product_level_2").like("%SEP%")),
+            "RETIREMENT"
+        )
+        .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+        .when(F.col("sub_product_level_1").isin(
+            "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+            "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+            "ADVISORY", "CASH SOLICITOR"
+        ), "INVESTMENT")
+        .when(
+            (F.col("sub_product_level_2").like("%Investment%")) |
+            (F.col("sub_product_level_2").like("%Brokerage%")) |
+            (F.col("sub_product_level_2").like("%Advisory%")),
+            "INVESTMENT"
+        )
+        .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+        .when(
+            (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+            (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+            "NETWORK_PRODUCTS"
+        )
+        .when(
+            (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+            "DISABILITY"
+        )
+        .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+        .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+        .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+        .otherwise("OTHER")
+    )
+
+
+# ============================================================================
+# SEQUENCE PROCESSING
+# ============================================================================
+
+def dedupe_consecutive(seq):
+    """
+    Remove consecutive duplicate values from a sequence.
+    
+    Args:
+        seq: List of values
+        
+    Returns:
+        List with consecutive duplicates removed
+    """
+    if not seq:
+        return []
+    out = [seq[0]]
+    for x in seq[1:]:
+        if x != out[-1]:
+            out.append(x)
+    return out
+
+
+def pad_history(hist, max_len=MAX_SEQ_LEN):
+    """
+    Pad history sequence to fixed length.
+    
+    Args:
+        hist: List of history values
+        max_len: Maximum length to pad to
+        
+    Returns:
+        Padded list of length max_len
+    """
+    arr = hist[-max_len:] if hist is not None else []
+    pad_len = max_len - len(arr)
+    return [0] * pad_len + arr
+
+
+# ============================================================================
+# FEATURE ENGINEERING
+# ============================================================================
+
+def extract_history_features(hist, num_classes):
+    """
+    Extract features from a history sequence.
+    
+    Args:
+        hist: List of product IDs in history
+        num_classes: Number of product classes
+        
+    Returns:
+        Tuple of (seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+    """
+    seq_len = len(hist)
+    last_1 = hist[-1] if seq_len >= 1 else 0
+    last_2 = hist[-2] if seq_len >= 2 else 0
+    unique_prior = len(set(hist))
+    num_switches = sum(1 for i in range(1, seq_len) if hist[i] != hist[i-1])
+    freq = Counter(hist)
+    freq_features = [freq.get(i, 0) for i in range(1, num_classes + 1)]
+    return (seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+
+
+def hist_to_features_row(x, num_classes):
+    """
+    Convert history sequence to feature row (for training).
+    
+    Args:
+        x: Tuple of (cont_id, hist, label)
+        num_classes: Number of product classes
+        
+    Returns:
+        Tuple of feature values
+    """
+    cont_id, hist, label = x
+    seq_len, last_1, last_2, unique_prior, num_switches, freq_features = extract_history_features(hist, num_classes)
+    return (str(cont_id), hist, label, seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+
+
+def hist_to_features_row_pred(x, num_classes):
+    """
+    Convert history sequence to feature row (for prediction).
+    
+    Args:
+        x: Tuple of (cont_id, hist)
+        num_classes: Number of product classes
+        
+    Returns:
+        Tuple of feature values
+    """
+    cont_id, hist = x
+    seq_len, last_1, last_2, unique_prior, num_switches, freq_features = extract_history_features(hist, num_classes)
+    return (str(cont_id), hist, seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+
+
+# ============================================================================
+# CATEGORICAL ENCODING
+# ============================================================================
+
+def encode_categorical_features(df, categorical_cols, spark_context, categorical_mappings=None):
+    """
+    Encode categorical features to integer indices.
+    
+    Args:
+        df: Spark DataFrame
+        categorical_cols: List of categorical column names
+        spark_context: SparkContext for broadcasting
+        categorical_mappings: Optional dict of {col_name: {value: index}} mappings.
+                            If None, mappings will be created from data.
+        
+    Returns:
+        Tuple of (encoded_df, mappings_dict)
+    """
+    if categorical_mappings is None:
+        categorical_mappings = {}
+    
+    result_df = df
+    
+    for c in categorical_cols:
+        if c in categorical_mappings:
+            # Use provided mapping
+            mapping = categorical_mappings[c]
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                )
+            )
+        else:
+            # Create mapping from data
+            vals = [r[0] for r in result_df.select(c).distinct().collect()]
+            mapping = {v: i for i, v in enumerate(sorted([str(x) for x in vals]))}
+            categorical_mappings[c] = mapping
+            
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                )
+            )
+    
+    return result_df, categorical_mappings
+
+
+# ============================================================================
+# MISSING VALUE IMPUTATION
+# ============================================================================
+
+def impute_missing_values(df, categorical_cols, numeric_fill=0, categorical_mode="UNKNOWN"):
+    """
+    Impute missing values in DataFrame.
+    
+    Args:
+        df: Spark DataFrame
+        categorical_cols: List of categorical column names
+        numeric_fill: Value to fill numeric nulls (default: 0)
+        categorical_mode: Value to fill categorical nulls (default: "UNKNOWN")
+        
+    Returns:
+        Spark DataFrame with imputed values
+    """
+    # Get numeric columns (excluding special columns)
+    numeric_cols = [
+        c for c, t in df.dtypes 
+        if t in ("int", "double", "bigint", "float") 
+        and c not in ("label", "seq_len", "last_1", "last_2", "unique_prior", "num_switches")
+    ]
+    
+    # Fill numeric nulls
+    fill_dict = {c: numeric_fill for c in numeric_cols}
+    result_df = df.fillna(fill_dict)
+    
+    # Fill categorical nulls with mode
+    for c in categorical_cols:
+        if c in result_df.columns:
+            try:
+                mode_val = result_df.groupBy(c).count().orderBy(F.desc("count")).first()
+                mode_val = mode_val[0] if mode_val and mode_val[0] is not None else categorical_mode
+            except:
+                mode_val = categorical_mode
+            
+            result_df = result_df.withColumn(
+                c,
+                F.when(F.col(c).isNull(), F.lit(mode_val)).otherwise(F.col(c))
+            )
+    
+    return result_df
+
+
+# ============================================================================
+# MAIN PREPROCESSING FUNCTION FOR PREDICTION
+# ============================================================================
+
+def preprocess_for_prediction(
+    spark,
+    df_raw,
+    prod2id: Dict[str, int],
+    num_classes: int,
+    max_seq_len: int = MAX_SEQ_LEN,
+    categorical_cols: Optional[List[str]] = None,
+    categorical_mappings: Optional[Dict] = None,
+    branchoffice_code: Optional[str] = None,
+    business_month: Optional[int] = None
+):
+    """
+    Preprocess raw data for prediction.
+    
+    Args:
+        spark: SparkSession
+        df_raw: Raw Spark DataFrame with client metrics
+        prod2id: Dictionary mapping product categories to IDs
+        num_classes: Number of product classes
+        max_seq_len: Maximum sequence length (default: MAX_SEQ_LEN)
+        categorical_cols: List of categorical column names
+        categorical_mappings: Optional dict of categorical mappings
+        branchoffice_code: Optional branch office code filter
+        business_month: Optional business month filter
+        
+    Returns:
+        Tuple of (preprocessed_pandas_df, feature_columns_list)
+    """
+    if categorical_cols is None:
+        categorical_cols = ["client_seg", "client_seg_1", "aum_band", "channel", "agent_segment", "branchoffice_code"]
+    
+    # Step 1: Create product category column
+    df = create_product_category_column(df_raw)
+    
+    # Step 2: Apply filters
+    if branchoffice_code:
+        df = df.filter(F.col("branchoffice_code") == branchoffice_code)
+    
+    if business_month:
+        df = df.filter(F.col("business_month") <= business_month)
+    
+    # Step 3: Prepare events data
+    df_events = df.select(
+        "cont_id", "product_category", "register_date",
+        "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+        "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
+        "branchoffice_code", "policy_status", "business_month"
+    ).filter(
+        (F.col("cont_id").isNotNull()) &
+        (F.col("register_date").isNotNull()) &
+        (F.col("product_category").isNotNull()) &
+        (F.col("policy_status") == "Active")
+    )
+    
+    # Step 4: Order events per user
+    df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
+    w = Window.partitionBy("cont_id").orderBy("register_ts")
+    df_events = df_events.withColumn("event_idx", F.row_number().over(w))
+    
+    # Step 5: Build sequences
+    rdd = df_events.select("cont_id", "event_idx", "product_category").rdd.map(
+        lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"]))
+    )
+    
+    grouped = rdd.groupByKey().mapValues(
+        lambda evs: [p for _, p in sorted(list(evs), key=lambda x: x[0])]
+    )
+    
+    grouped = grouped.mapValues(dedupe_consecutive).filter(lambda kv: len(kv[1]) >= 1)
+    
+    # Step 6: Create prediction examples
+    def make_prediction_examples(kv):
+        cont_id, seq = kv
+        seq_ids = [prod2id.get(x, 0) for x in seq]
+        if len(seq_ids) == 0:
+            return []
+        history = seq_ids[-max_seq_len:] if len(seq_ids) > max_seq_len else seq_ids
+        return [(str(cont_id), history)]
+    
+    pred_examples_rdd = grouped.flatMap(make_prediction_examples)
+    
+    pred_schema = StructType([
+        StructField("cont_id", StringType(), True),
+        StructField("hist_seq", ArrayType(IntegerType()), True),
+    ])
+    pred_examples_df = spark.createDataFrame(pred_examples_rdd, pred_schema).cache()
+    
+    # Step 7: Extract history features
+    rows_pred_rdd = pred_examples_rdd.map(
+        lambda x: hist_to_features_row_pred(x, num_classes)
+    )
+    
+    feat_pred_schema = StructType([
+        StructField("cont_id", StringType(), True),
+        StructField("hist_seq", ArrayType(IntegerType()), True),
+        StructField("seq_len", IntegerType(), True),
+        StructField("last_1", IntegerType(), True),
+        StructField("last_2", IntegerType(), True),
+        StructField("unique_prior", IntegerType(), True),
+        StructField("num_switches", IntegerType(), True),
+        StructField("freq_list", ArrayType(IntegerType()), True),
+    ])
+    
+    pred_feats_df = spark.createDataFrame(rows_pred_rdd, feat_pred_schema).cache()
+    
+    # Step 8: Expand freq_list into separate columns
+    for i in range(1, num_classes + 1):
+        pred_feats_df = pred_feats_df.withColumn(f"freq_{i}", F.col("freq_list")[i-1])
+    pred_feats_df = pred_feats_df.drop("freq_list")
+    
+    # Step 9: Join with static features from most recent snapshot
+    w2 = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
+    client_snapshot = (
+        df_events
+        .withColumn("rn", F.row_number().over(w2))
+        .filter(F.col("rn") == 1)
+        .select(
+            "cont_id",
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", 
+            "agent_segment", "branchoffice_code", "business_month"
+        )
+    )
+    
+    pred_full = pred_feats_df.join(client_snapshot, on="cont_id", how="inner")
+    
+    # Step 10: Impute missing values
+    pred_full = impute_missing_values(pred_full, categorical_cols)
+    
+    # Step 11: Pad history sequences
+    pad_udf = F.udf(lambda x: pad_history(x, max_seq_len), ArrayType(IntegerType()))
+    pred_full = pred_full.withColumn("hist_padded", pad_udf(F.col("hist_seq")))
+    
+    for i in range(max_seq_len):
+        pred_full = pred_full.withColumn(f"hist_{i}", F.col("hist_padded")[i])
+    
+    pred_full = pred_full.drop("hist_seq", "hist_padded")
+    
+    # Step 12: Encode categorical features
+    pred_full, categorical_mappings = encode_categorical_features(
+        pred_full, categorical_cols, spark.sparkContext, categorical_mappings
+    )
+    
+    # Step 13: Build feature column list
+    model_feature_cols = (
+        [f"hist_{i}" for i in range(max_seq_len)] +
+        ["seq_len", "last_1", "last_2", "unique_prior", "num_switches"] +
+        [f"freq_{i}" for i in range(1, num_classes + 1)] +
+        [
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age"
+        ] +
+        [c + "_idx" for c in categorical_cols]
+    )
+    
+    # Step 14: Convert to Pandas and final cleanup
+    pred_pd = pred_full.select(["cont_id", "business_month"] + model_feature_cols).toPandas()
+    pred_pd.fillna(0, inplace=True)
+    
+    return pred_pd, model_feature_cols, categorical_mappings
+
+
+# ============================================================================
+# HELPER FUNCTIONS FOR MODEL ARTIFACTS
+# ============================================================================
+
+def get_feature_columns(num_classes: int, max_seq_len: int = MAX_SEQ_LEN, 
+                       categorical_cols: Optional[List[str]] = None) -> List[str]:
+    """
+    Get the list of feature columns in the correct order.
+    
+    Args:
+        num_classes: Number of product classes
+        max_seq_len: Maximum sequence length
+        categorical_cols: List of categorical column names
+        
+    Returns:
+        List of feature column names
+    """
+    if categorical_cols is None:
+        categorical_cols = ["client_seg", "client_seg_1", "aum_band", "channel", "agent_segment", "branchoffice_code"]
+    
+    return (
+        [f"hist_{i}" for i in range(max_seq_len)] +
+        ["seq_len", "last_1", "last_2", "unique_prior", "num_switches"] +
+        [f"freq_{i}" for i in range(1, num_classes + 1)] +
+        [
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age"
+        ] +
+        [c + "_idx" for c in categorical_cols]
+    )
+
