@@ -1,131 +1,209 @@
 # ============================================================================
-# STEP 0: Save Model Artifacts from Training Notebook
+# Register PreprocessAndPredictModel in Unity Catalog
 # ============================================================================
-# Run this cell AFTER training your model in the diagnostics notebook
-# This saves all required artifacts to your working directory
+# This cell registers the model after you've saved your artifacts from training
 
+import mlflow
+import mlflow.pyfunc
+from mlflow.models.signature import infer_signature
+from pyspark.sql import SparkSession
+import pandas as pd
 import os
+import tempfile
 import pickle
-import lightgbm as lgb
+import sys
 
-# ============================================================================
-# CONFIGURATION - Choose where to save artifacts
-# ============================================================================
+# Add path for preprocessing
+sys.path.append('/Workspace/Users/rajesh.patil@equitable.com/Final_model_files')
 
-# Option 1: Save in your working directory (current notebook directory) - RECOMMENDED
-WORKING_DIR = os.getcwd()  # Current working directory
-ARTIFACTS_PATH = os.path.join(WORKING_DIR, "model_artifacts")
-
-# Option 2: Save in a specific Databricks path (uncomment if preferred)
-# ARTIFACTS_PATH = "/dbfs/FileStore/model_artifacts"
-
-# Option 3: Save in Unity Catalog mount point (uncomment if preferred)
-# ARTIFACTS_PATH = "/dbfs/mnt/unity-catalog/models/wealth_management_product_recommendation/v1"
-
-print("=" * 80)
-print("SAVING MODEL ARTIFACTS")
-print("=" * 80)
-print(f"Artifacts will be saved to: {ARTIFACTS_PATH}")
-
-# ============================================================================
-# STEP 1: Collect Artifacts from Training Notebook
-# ============================================================================
-# After running your training notebook, you should have these variables:
-# Make sure you've run the training cells and have these variables available
-
-# Check if variables exist (they should be from your training notebook)
+# Import save/load functions if available, otherwise define them
 try:
-    # These should be available from your diagnostics notebook after training
-    # If running in the same notebook session, they'll be available
-    # If running separately, you'll need to load them first
+    from preprocess_and_predict import save_model_artifacts, load_model_artifacts
+except ImportError:
+    # Define the functions if not available
+    import lightgbm as lgb
     
-    artifacts = {
-        'model': "eda_smartlist.models.final_lgbm_multiclass_model",  # Your trained LightGBM model (from Cell 5)
-        'prod2id': prod2id,  # Product to ID mapping (from Cell 4)
-        'id2prod': id2prod,  # ID to product mapping (from Cell 4)
-        'label_map': label_map,  # Label mapping (from Cell 4)
-        'num_classes': NUM_CLASSES,  # Number of classes (from Cell 4)
-        'feature_cols': model_feature_cols,  # Feature columns list (from Cell 4)
-        'max_seq_len': MAX_SEQ_LEN,  # Maximum sequence length (from Cell 4)
-        'categorical_mappings': None  # Optional - can be None or a dict
-    }
-    
-    print("\n✓ Found all required artifacts from training notebook")
-    print(f"  - Model: {type(artifacts['model'])}")
-    print(f"  - prod2id: {len(artifacts['prod2id'])} products")
-    print(f"  - num_classes: {artifacts['num_classes']}")
-    print(f"  - feature_cols: {len(artifacts['feature_cols'])} features")
-    
-except NameError as e:
-    print(f"\n✗ Missing required variable: {e}")
-    print("\nPlease ensure you've run the training cells from diagnostics notebook first.")
-    print("\nRequired variables from diagnostics notebook:")
-    print("  - model: trained LightGBM model (from Cell 5)")
-    print("  - prod2id: product to ID mapping dictionary (from Cell 4)")
-    print("  - id2prod: ID to product mapping dictionary (from Cell 4)")
-    print("  - label_map: label mapping dictionary (from Cell 4)")
-    print("  - NUM_CLASSES: number of classes (from Cell 4)")
-    print("  - model_feature_cols: list of feature column names (from Cell 4)")
-    print("  - MAX_SEQ_LEN: maximum sequence length, usually 10 (from Cell 4)")
-    print("\nIf running in a different notebook, you can also manually create artifacts:")
-    print("""
-    artifacts = {
-        'model': your_trained_model,
-        'prod2id': your_prod2id_dict,
-        'id2prod': your_id2prod_dict,
-        'label_map': your_label_map_dict,
-        'num_classes': your_num_classes,
-        'feature_cols': your_model_feature_cols_list,
-        'max_seq_len': 10,
-        'categorical_mappings': None  # Optional
-    }
-    """)
+def save_model_artifacts(artifacts_dict, path):
+    os.makedirs(path, exist_ok=True)
+    if 'model' in artifacts_dict:
+        model = artifacts_dict.pop('model')
+        model.save_model(os.path.join(path, 'model.txt'))
+    with open(os.path.join(path, 'artifacts.pkl'), 'wb') as f:
+        pickle.dump(artifacts_dict, f)
+    print(f"Model artifacts saved to {path}")
+
+def load_model_artifacts(path):
+    artifacts = {}
+    artifacts_path = os.path.join(path, 'artifacts.pkl')
+    if os.path.exists(artifacts_path):
+        with open(artifacts_path, 'rb') as f:
+            other_artifacts = pickle.load(f)
+            artifacts.update(other_artifacts)
+    return artifacts
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# Model registration details
+CATALOG_NAME = "eda_smartlist"  # Your Unity Catalog name
+SCHEMA_NAME = "models"  # Schema name in Unity Catalog
+MODEL_NAME = "preprocess_and_predict_model_lgbm"  # Model name
+
+# # Paths (adjust based on your setup)
+ARTIFACTS_PATH = "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files"
+
+# ============================================================================
+# STEP 1: Save Model Artifacts (if not already saved)
+# ============================================================================
+
+print("=" * 80)
+print("STEP 1: Saving/Loading Model Artifacts")
+print("=" * 80)
+
+# Load artifacts
+try:
+    artifacts = load_model_artifacts(ARTIFACTS_PATH)
+    print(f"✓ Loaded artifacts from {ARTIFACTS_PATH}")
+except Exception as e:
+    print(f"✗ Could not load artifacts from {ARTIFACTS_PATH}")
+    print(f"  Error: {e}")
+    print("  Please ensure artifacts are saved first using save_model_artifacts()")
     raise
 
 # ============================================================================
-# STEP 2: Save Artifacts
+# STEP 2: Create Sample Input for Signature Inference
 # ============================================================================
 
-# Create directory if it doesn't exist
-os.makedirs(ARTIFACTS_PATH, exist_ok=True)
-print(f"\n✓ Created directory: {ARTIFACTS_PATH}")
+print("\n" + "=" * 80)
+print("STEP 2: Creating Sample Input")
+print("=" * 80)
 
-# Save LightGBM model
-model_path = os.path.join(ARTIFACTS_PATH, "model.txt")
-artifacts['model'].save_model(model_path)
-print(f"✓ Saved LightGBM model to: {model_path}")
+spark = SparkSession.builder.getOrCreate()
 
-# Save other artifacts (excluding model, which is saved separately)
-artifacts_to_save = {
-    'prod2id': artifacts['prod2id'],
-    'id2prod': artifacts['id2prod'],
-    'label_map': artifacts['label_map'],
-    'num_classes': artifacts['num_classes'],
-    'categorical_mappings': artifacts.get('categorical_mappings'),
-    'feature_cols': artifacts['feature_cols'],
-    'max_seq_len': artifacts['max_seq_len']
+# Create sample input - dict with parameters (will load from table)
+sample_input = {
+    "table_name": "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
+    "branchoffice_code": "83",
+    "business_month": 202511
 }
 
-artifacts_file = os.path.join(ARTIFACTS_PATH, "artifacts.pkl")
-with open(artifacts_file, 'wb') as f:
-    pickle.dump(artifacts_to_save, f)
-print(f"✓ Saved artifacts to: {artifacts_file}")
+print(f"✓ Created sample input")
 
-# Display what was saved
+# ============================================================================
+# STEP 3: Initialize Model and Get Sample Output
+# ============================================================================
+
 print("\n" + "=" * 80)
-print("ARTIFACTS SAVED SUCCESSFULLY")
+print("STEP 3: Testing Model")
 print("=" * 80)
-print(f"\nSaved artifacts:")
-print(f"  1. model.txt - LightGBM model file")
-print(f"  2. artifacts.pkl - Contains:")
-for key, value in artifacts_to_save.items():
-    if value is not None:
-        if isinstance(value, dict):
-            print(f"     - {key}: dict with {len(value)} items")
-        elif isinstance(value, list):
-            print(f"     - {key}: list with {len(value)} items")
-        else:
-            print(f"     - {key}: {type(value).__name__} = {value}")
 
-print(f"\n📁 Artifacts location: {ARTIFACTS_PATH}")
-print(f"\n✅ You can now proceed to register the model in the next cell!")
+# Create model instance
+model_instance = PreprocessAndPredictModel()
+
+# Set artifacts manually (since we're not loading from MLflow context yet)
+model_instance.model = "eda_smartlist.models.final_lgbm_multiclass_model"
+model_instance.prod2id = artifacts['prod2id']
+model_instance.id2prod = artifacts['id2prod']
+model_instance.label_map = artifacts['label_map']
+model_instance.num_classes = artifacts['num_classes']
+model_instance.categorical_mappings = artifacts.get('categorical_mappings')
+model_instance.feature_cols = artifacts['feature_cols']
+model_instance.max_seq_len = artifacts.get('max_seq_len', 10)
+
+# Test prediction
+try:
+    sample_output = model_instance.predict(None, sample_input)
+    print(f"✓ Model prediction successful")
+    print(f"  Output shape: {sample_output.shape}")
+    print(f"  Output columns: {list(sample_output.columns)}")
+except Exception as e:
+    print(f"✗ Model prediction failed")
+    print(f"  Error: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+    
+# ============================================================================
+# STEP 5: Log and Register Model
+# ============================================================================
+
+artifacts_dir = "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files"
+
+print("\n" + "=" * 80)
+print("STEP 5: Logging and Registering Model")
+print("=" * 80)
+
+# Infer signature
+try:
+    signature = infer_signature(sample_input, sample_output)
+    print(f"✓ Inferred model signature")
+except Exception as e:
+    print(f"⚠ Could not infer signature: {e}")
+    signature = None
+
+# Log model
+with mlflow.start_run() as run:
+    mlflow.pyfunc.log_model(
+        artifact_path="preprocess_and_predict_model",
+        python_model=PreprocessAndPredictModel(),
+        code_paths=[
+            "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files/final_preprocessor.py"
+        ],
+        artifacts={
+            "model_path": "eda_smartlist.models.final_lgbm_multiclass_model",
+            "artifacts_path": artifacts_dir
+        },
+        signature=signature,
+        input_example=sample_input if isinstance(sample_input, pd.DataFrame) else None
+    )
+    run_id = run.info.run_id
+    print(f"✓ Logged model with run_id: {run_id}")
+
+# Register the model in Unity Catalog with the specified name
+model_uri = f"runs:/{run_id}/preprocess_and_predict_model"
+registered_model = mlflow.register_model(
+    model_uri=model_uri,
+    name=f"{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}"
+)
+
+print(f"\n{'=' * 80}")
+print("SUCCESS!")
+print(f"{'=' * 80}")
+print(f"✓ Model registered successfully")
+print(f"  Model URI: models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{registered_model.version}")
+print(f"\nTo use the model:")
+print(f"  import mlflow")
+print(f"  model = mlflow.pyfunc.load_model('models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{registered_model.version}')")
+print(f"  predictions = model.predict(input_data)")
+
+
+
+
+
+================================================================================
+STEP 1: Saving/Loading Model Artifacts
+================================================================================
+✓ Loaded artifacts from /Workspace/Users/rajesh.patil@equitable.com/Final_model_files
+
+================================================================================
+STEP 2: Creating Sample Input
+================================================================================
+✓ Created sample input
+
+================================================================================
+STEP 3: Testing Model
+================================================================================
+✗ Model prediction failed
+  Error: 'str' object has no attribute 'predict'
+Traceback (most recent call last):
+  File "/root/.ipykernel/1571/command-8615534164547256-1986917582", line 140, in <module>
+    sample_output = model_instance.predict(None, sample_input)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/utils/data_validation.py", line 77, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/.ipykernel/1571/command-8615534164547255-3359061669", line 341, in predict
+    pred_probs = self.model.predict(pred_pd[self.feature_cols])
+                 ^^^^^^^^^^^^^^^^^^
+AttributeError: 'str' object has no attribute 'predict'
