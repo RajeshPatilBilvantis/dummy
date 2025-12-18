@@ -15,14 +15,14 @@ from pyspark.sql.window import Window
 CATALOG_NAME = "eda_smartlist"
 SCHEMA_NAME = "models"
 MODEL_NAME = "preprocess_and_predict_model_lgbm"
-MODEL_VERSION = "latest"  # Or specify a version like "4"
+MODEL_VERSION = "5"
 
 MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
 
 # Table and filter parameters
 TABLE_NAME = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
 BRANCHOFFICE_CODE = "83"  # Optional: set to None if you want all branch offices
-BUSINESS_MONTH = 202511  # Optional: set to None if you want all months
+BUSINESS_MONTH = 202510  # Optional: set to None if you want all months
 
 # ============================================================================
 # STEP 1: Load Model from Unity Catalog
@@ -60,8 +60,8 @@ if BRANCHOFFICE_CODE:
     print(f"✓ Filtered by branchoffice_code: {BRANCHOFFICE_CODE}")
 
 if BUSINESS_MONTH:
-    df_raw = df_raw.filter(F.col("business_month") <= BUSINESS_MONTH)
-    print(f"✓ Filtered by business_month <= {BUSINESS_MONTH}")
+    df_raw = df_raw.filter(F.col("business_month") == BUSINESS_MONTH)
+    print(f"✓ Filtered by business_month = {BUSINESS_MONTH}")
 
 # Filter to only Active policies (required for the model)
 df_raw = df_raw.filter(F.col("policy_status") == "Active")
@@ -73,14 +73,14 @@ print("✓ Filtered to Active policies only")
 # Note: Adjust the column name based on your actual schema
 
 # Option 1: If you have a policy_id column
-# policy_count_df = df_raw.groupBy("axa_party_id").agg(
-#     F.countDistinct("policy_id").alias("policy_count")
-# ).filter(F.col("policy_count") == 1)
-
-# Option 2: If cont_id represents policies (one cont_id = one policy)
 policy_count_df = df_raw.groupBy("axa_party_id").agg(
-    F.countDistinct("cont_id").alias("policy_count")
+    F.countDistinct("policy_no").alias("policy_count")
 ).filter(F.col("policy_count") == 1)
+
+# # Option 2: If cont_id represents policies (one cont_id = one policy)
+# policy_count_df = df_raw.groupBy("axa_party_id").agg(
+#     F.countDistinct("cont_id").alias("policy_count")
+# ).filter(F.col("policy_count") == 1)
 
 print(f"✓ Found {policy_count_df.count():,} axa_party_id with exactly 1 policy")
 
@@ -150,3 +150,50 @@ except Exception as e:
 print("\n" + "=" * 80)
 print("Complete!")
 print("=" * 80)
+
+
+
+
+✓ Loaded LightGBM model from models:/eda_smartlist.models.final_lgbm_multiclass_model/1
+✓ Loaded artifacts from /local_disk0/repl_tmp_data/ReplId-19b30-c06a1-4/tmphkyh98en/artifacts/Final_model_files/artifacts.pkl
+✓ Model loaded successfully from models:/eda_smartlist.models.preprocess_and_predict_model_lgbm/5
+
+================================================================================
+Loading and Filtering Data
+================================================================================
+✓ Filtered by branchoffice_code: 83
+✓ Filtered by business_month = 202510
+✓ Filtered to Active policies only
+✓ Found 221,928 axa_party_id with exactly 1 policy
+✓ Extracted 221,928 unique axa_party_id
+✓ Filtered data: 221,930 rows
+  Unique axa_party_id: 221,928
+  Unique cont_id: 221,928
+
+================================================================================
+Making Predictions
+================================================================================
+✗ Prediction failed: Failed to enforce schema of data 'DataFrame[policy_no: string, source_sys_id: string, prod_code: string, plan_code: string, plan_subcd_code: string, register_date: string, trmn_eff_date: string, face_amt: float, cash_val_amt: float, acct_val_amt: float, monthly_preminum_amount: double, isrd_brth_date: string, birth_dt: string, ref_num: string, cont_id: string, axa_party_id: string, hhkey: string, agt_no: string, strt_date: string, end_date: string, class_code: string, agt_class: string, branch_name: string, branchoffice_code: string, agt_first_name: string, agt_last_name: string, business_city: string, business_state_cod: string, business_zip_code: string, division: string, active_head_count_flag: string, wm_headcount: string, division_name: string, elas_y_n: string, headcount: string, wti_lob_txt: string, mkt_prod_hier: string, prod_lob: string, sub_product_level_1: string, sub_product_level_2: string, wc_total_assets: double, wc_assetmix_stocks: double, wc_assetmix_bonds: double, wc_assetmix_mutual_funds: double, wc_assetmix_annuity: double, wc_assetmix_deposits: double, wc_assetmix_other_assets: double, psn_age: double, client_seg: string, client_seg_1: string, aum_band: string, policy_status: string, policy_type: string, designation: string, final_designation: string, business_year: string, quarter: string, esf_yr: string, esf_hire: string, agent_segment: string, transaction_policy: double, client_type: string, channel: string, business_month: int]' with schema '['table_name': string (required), 'branchoffice_code': string (required), 'business_month': long (required)]'. Error: Model is missing inputs ['table_name']. Note that there were extra inputs: ['psn_age', 'policy_no', 'face_amt', 'business_state_cod', 'birth_dt', 'headcount', 'division_name', 'prod_lob', 'business_city', 'plan_subcd_code', 'sub_product_level_1', 'wc_assetmix_deposits', 'source_sys_id', 'client_seg_1', 'register_date', 'cont_id', 'agt_no', 'class_code', 'policy_status', 'designation', 'prod_code', 'ref_num', 'policy_type', 'quarter', 'wc_assetmix_stocks', 'cash_val_amt', 'monthly_preminum_amount', 'strt_date', 'client_seg', 'esf_yr', 'esf_hire', 'agt_first_name', 'client_type', 'division', 'hhkey', 'wc_assetmix_mutual_funds', 'channel', 'wm_headcount', 'agt_class', 'acct_val_amt', 'agent_segment', 'transaction_policy', 'branch_name', 'agt_last_name', 'trmn_eff_date', 'wc_assetmix_other_assets', 'wc_assetmix_bonds', 'axa_party_id', 'isrd_brth_date', 'plan_code', 'wc_total_assets', 'aum_band', 'end_date', 'mkt_prod_hier', 'business_zip_code', 'wc_assetmix_annuity', 'elas_y_n', 'business_year', 'final_designation', 'wti_lob_txt', 'sub_product_level_2', 'active_head_count_flag']
+Traceback (most recent call last):
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/__init__.py", line 722, in _validate_prediction_input
+    data = _enforce_schema(data, input_schema, flavor)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/models/utils.py", line 1259, in _enforce_schema
+    raise MlflowException(message)
+mlflow.exceptions.MlflowException: Model is missing inputs ['table_name']. Note that there were extra inputs: ['psn_age', 'policy_no', 'face_amt', 'business_state_cod', 'birth_dt', 'headcount', 'division_name', 'prod_lob', 'business_city', 'plan_subcd_code', 'sub_product_level_1', 'wc_assetmix_deposits', 'source_sys_id', 'client_seg_1', 'register_date', 'cont_id', 'agt_no', 'class_code', 'policy_status', 'designation', 'prod_code', 'ref_num', 'policy_type', 'quarter', 'wc_assetmix_stocks', 'cash_val_amt', 'monthly_preminum_amount', 'strt_date', 'client_seg', 'esf_yr', 'esf_hire', 'agt_first_name', 'client_type', 'division', 'hhkey', 'wc_assetmix_mutual_funds', 'channel', 'wm_headcount', 'agt_class', 'acct_val_amt', 'agent_segment', 'transaction_policy', 'branch_name', 'agt_last_name', 'trmn_eff_date', 'wc_assetmix_other_assets', 'wc_assetmix_bonds', 'axa_party_id', 'isrd_brth_date', 'plan_code', 'wc_total_assets', 'aum_band', 'end_date', 'mkt_prod_hier', 'business_zip_code', 'wc_assetmix_annuity', 'elas_y_n', 'business_year', 'final_designation', 'wti_lob_txt', 'sub_product_level_2', 'active_head_count_flag']
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/root/.ipykernel/1586/command-7929736173816183-3822226644", line 108, in <module>
+    predictions = model.predict(df_filtered)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/__init__.py", line 804, in predict
+    return self._predict(data, params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/__init__.py", line 843, in _predict
+    data, params = _validate_prediction_input(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/__init__.py", line 725, in _validate_prediction_input
+    raise MlflowException.invalid_parameter_value(
+mlflow.exceptions.MlflowException: Failed to enforce schema of data 'DataFrame[policy_no: string, source_sys_id: string, prod_code: string, plan_code: string, plan_subcd_code: string, register_date: string, trmn_eff_date: string, face_amt: float, cash_val_amt: float, acct_val_amt: float, monthly_preminum_amount: double, isrd_brth_date: string, birth_dt: string, ref_num: string, cont_id: string, axa_party_id: string, hhkey: string, agt_no: string, strt_date: string, end_date: string, class_code: string, agt_class: string, branch_name: string, branchoffice_code: string, agt_first_name: string, agt_last_name: string, business_city: string, business_state_cod: string, business_zip_code: string, division: string, active_head_count_flag: string, wm_headcount: string, division_name: string, elas_y_n: string, headcount: string, wti_lob_txt: string, mkt_prod_hier: string, prod_lob: string, sub_product_level_1: string, sub_product_level_2: string, wc_total_assets: double, wc_assetmix_stocks: double, wc_assetmix_bonds: double, wc_assetmix_mutual_funds: double, wc_assetmix_annuity: double, wc_assetmix_deposits: double, wc_assetmix_other_assets: double, psn_age: double, client_seg: string, client_seg_1: string, aum_band: string, policy_status: string, policy_type: string, designation: string, final_designation: string, business_year: string, quarter: string, esf_yr: string, esf_hire: string, agent_segment: string, transaction_policy: double, client_type: string, channel: string, business_month: int]' with schema '['table_name': string (required), 'branchoffice_code': string (required), 'business_month': long (required)]'. Error: Model is missing inputs ['table_name']. Note that there were extra inputs: ['psn_age', 'policy_no', 'face_amt', 'business_state_cod', 'birth_dt', 'headcount', 'division_name', 'prod_lob', 'business_city', 'plan_subcd_code', 'sub_product_level_1', 'wc_assetmix_deposits', 'source_sys_id', 'client_seg_1', 'register_date', 'cont_id', 'agt_no', 'class_code', 'policy_status', 'designation', 'prod_code', 'ref_num', 'policy_type', 'quarter', 'wc_assetmix_stocks', 'cash_val_amt', 'monthly_preminum_amount', 'strt_date', 'client_seg', 'esf_yr', 'esf_hire', 'agt_first_name', 'client_type', 'division', 'hhkey', 'wc_assetmix_mutual_funds', 'channel', 'wm_headcount', 'agt_class', 'acct_val_amt', 'agent_segment', 'transaction_policy', 'branch_name', 'agt_last_name', 'trmn_eff_date', 'wc_assetmix_other_assets', 'wc_assetmix_bonds', 'axa_party_id', 'isrd_brth_date', 'plan_code', 'wc_total_assets', 'aum_band', 'end_date', 'mkt_prod_hier', 'business_zip_code', 'wc_assetmix_annuity', 'elas_y_n', 'business_year', 'final_designation', 'wti_lob_txt', 'sub_product_level_2', 'active_head_count_flag']
