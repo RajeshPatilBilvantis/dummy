@@ -1,4 +1,378 @@
 # ============================================================================
+# PreprocessAndPredictModel Class for Unity Catalog
+# ============================================================================
+# This model loads data from 'dl_tenants_daas.us_wealth_management.wealth_management_client_metrics',
+# applies preprocessing steps from the diagnostics notebook, loads a saved LightGBM model,
+# and makes predictions.
+
+import mlflow.pyfunc
+import mlflow
+import sys
+import os
+import numpy as np
+import pandas as pd
+from typing import Dict, Any, Optional
+from pyspark.sql import SparkSession, DataFrame, Window
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
+from collections import Counter
+
+# Add path to preprocessing.py
+sys.path.append('/Workspace/Users/rajesh.patil@equitable.com/Final_model_files')
+
+# Import preprocessing functions from the specified path
+from final_preprocessor import (
+    create_product_category_column,
+    dedupe_consecutive,
+    pad_history,
+    extract_history_features,
+    hist_to_features_row_pred,
+    impute_missing_values,
+    encode_categorical_features,
+    get_feature_columns
+)
+
+# Constants
+MAX_SEQ_LEN = 10
+MIN_EVENTS = 1  # For prediction, we only need at least 1 event
+
+
+class PreprocessAndPredictModel(mlflow.pyfunc.PythonModel):
+    """
+    MLflow PythonModel for preprocessing and prediction.
+    
+    This model:
+    1. Loads data from Unity Catalog table
+    2. Applies preprocessing transformations
+    3. Loads LightGBM model from Unity Catalog
+    4. Makes predictions
+    """
+    
+    def __init__(self):
+        """Initialize the model."""
+        self.model = None
+        self.prod2id = None
+        self.id2prod = None
+        self.label_map = None
+        self.num_classes = None
+        self.categorical_mappings = None
+        self.feature_cols = None
+        self.max_seq_len = MAX_SEQ_LEN
+        
+    def load_context(self, context: mlflow.pyfunc.PythonModelContext):
+        """
+        Load model artifacts from MLflow context.
+        
+        This method is called when the model is loaded. It should load:
+        - The LightGBM model
+        - Product mappings (prod2id, id2prod)
+        - Label mappings
+        - Categorical feature mappings
+        - Other artifacts needed for preprocessing
+        """
+        import lightgbm as lgb
+        import pickle
+        
+        if context is None:
+            raise ValueError("MLflow context is required to load model artifacts")
+        
+        # Get artifacts directory from context
+        artifacts_dir = context.artifacts.get("artifacts_path") or context.artifacts.get("model_path")
+        
+        if not artifacts_dir:
+            # Try to find artifacts in the model directory
+            # MLflow stores artifacts in the model root
+            model_root = os.path.dirname(os.path.abspath(__file__))
+            artifacts_dir = os.path.join(model_root, "artifacts")
+        
+        # # Load LightGBM model
+        
+        # Load other artifacts
+        artifacts_file = os.path.join(artifacts_dir, "artifacts.pkl")
+        if os.path.exists(artifacts_file):
+            with open(artifacts_file, 'rb') as f:
+                artifacts = pickle.load(f)
+                self.prod2id = artifacts.get('prod2id')
+                self.id2prod = artifacts.get('id2prod')
+                self.label_map = artifacts.get('label_map')
+                self.num_classes = artifacts.get('num_classes', 7)
+                self.categorical_mappings = artifacts.get('categorical_mappings')
+                self.feature_cols = artifacts.get('feature_cols')
+                self.max_seq_len = artifacts.get('max_seq_len', MAX_SEQ_LEN)
+                print(f"✓ Loaded artifacts from {artifacts_file}")
+        else:
+            raise FileNotFoundError(f"Artifacts file not found at {artifacts_file}. Ensure artifacts.pkl is in artifacts.")
+        
+        # Validate required artifacts
+        if self.prod2id is None or self.id2prod is None:
+            raise ValueError("prod2id and id2prod mappings are required")
+        if self.label_map is None:
+            raise ValueError("label_map is required")
+        if self.feature_cols is None:
+            raise ValueError("feature_cols is required")
+    
+    def _load_data_from_table(
+        self, 
+        spark: SparkSession,
+        table_name: str = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
+        branchoffice_code: Optional[str] = None,
+        business_month: Optional[int] = None
+    ) -> DataFrame:
+        """
+        Load data from Unity Catalog table.
+        
+        Args:
+            spark: SparkSession
+            table_name: Name of the table to load from
+            branchoffice_code: Optional branch office code filter
+            business_month: Optional business month filter
+            
+        Returns:
+            Spark DataFrame with raw data
+        """
+        df_raw = spark.table(table_name)
+        
+        # Apply filters if provided
+        if branchoffice_code:
+            df_raw = df_raw.filter(F.col("branchoffice_code") == branchoffice_code)
+        
+        if business_month:
+            df_raw = df_raw.filter(F.col("business_month") <= business_month)
+        
+        return df_raw
+    
+    def _preprocess_data(
+        self,
+        spark: SparkSession,
+        df_raw: DataFrame,
+        prod2id: Dict[str, int],
+        num_classes: int,
+        categorical_mappings: Optional[Dict] = None
+    ) -> pd.DataFrame:
+        """
+        Preprocess raw data following the exact steps from diagnostics notebook.
+        
+        Args:
+            spark: SparkSession
+            df_raw: Raw Spark DataFrame
+            prod2id: Product to ID mapping
+            num_classes: Number of product classes
+            categorical_mappings: Categorical feature mappings
+            
+        Returns:
+            Preprocessed Pandas DataFrame ready for prediction
+        """
+        # Step 1: Create product category column
+        df = create_product_category_column(df_raw)
+        
+        # Step 2: Prepare events data
+        df_events = df.select(
+            "cont_id", "product_category", "register_date",
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
+            "branchoffice_code", "policy_status", "business_month"
+        ).filter(
+            (F.col("cont_id").isNotNull()) &
+            (F.col("register_date").isNotNull()) &
+            (F.col("product_category").isNotNull()) &
+            (F.col("policy_status") == "Active")
+        )
+        
+        # Step 3: Order events per user
+        df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
+        w = Window.partitionBy("cont_id").orderBy("register_ts")
+        df_events = df_events.withColumn("event_idx", F.row_number().over(w))
+        
+        # Step 4: Build sequences
+        rdd = df_events.select("cont_id", "event_idx", "product_category").rdd.map(
+            lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"]))
+        )
+        
+        grouped = rdd.groupByKey().mapValues(
+            lambda evs: [p for _, p in sorted(list(evs), key=lambda x: x[0])]
+        )
+        
+        grouped = grouped.mapValues(dedupe_consecutive).filter(lambda kv: len(kv[1]) >= MIN_EVENTS)
+        
+        # Step 5: Create prediction examples
+        def make_prediction_examples(kv):
+            cont_id, seq = kv
+            seq_ids = [prod2id.get(x, 0) for x in seq]
+            if len(seq_ids) == 0:
+                return []
+            history = seq_ids[-self.max_seq_len:] if len(seq_ids) > self.max_seq_len else seq_ids
+            return [(str(cont_id), history)]
+        
+        pred_examples_rdd = grouped.flatMap(make_prediction_examples)
+        
+        pred_schema = StructType([
+            StructField("cont_id", StringType(), True),
+            StructField("hist_seq", ArrayType(IntegerType()), True),
+        ])
+        pred_examples_df = spark.createDataFrame(pred_examples_rdd, pred_schema).cache()
+        
+        # Step 6: Extract history features
+        rows_pred_rdd = pred_examples_rdd.map(
+            lambda x: hist_to_features_row_pred(x, num_classes)
+        )
+        
+        feat_pred_schema = StructType([
+            StructField("cont_id", StringType(), True),
+            StructField("hist_seq", ArrayType(IntegerType()), True),
+            StructField("seq_len", IntegerType(), True),
+            StructField("last_1", IntegerType(), True),
+            StructField("last_2", IntegerType(), True),
+            StructField("unique_prior", IntegerType(), True),
+            StructField("num_switches", IntegerType(), True),
+            StructField("freq_list", ArrayType(IntegerType()), True),
+        ])
+        
+        pred_feats_df = spark.createDataFrame(rows_pred_rdd, feat_pred_schema).cache()
+        
+        # Step 7: Expand freq_list into separate columns
+        for i in range(1, num_classes + 1):
+            pred_feats_df = pred_feats_df.withColumn(f"freq_{i}", F.col("freq_list")[i-1])
+        pred_feats_df = pred_feats_df.drop("freq_list")
+        
+        # Step 8: Join with static features from most recent snapshot
+        w2 = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
+        client_snapshot = (
+            df_events
+            .withColumn("rn", F.row_number().over(w2))
+            .filter(F.col("rn") == 1)
+            .select(
+                "cont_id",
+                "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+                "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+                "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+                "psn_age", "client_seg", "client_seg_1", "aum_band", "channel",
+                "agent_segment", "branchoffice_code", "business_month"
+            )
+        )
+        
+        pred_full = pred_feats_df.join(client_snapshot, on="cont_id", how="inner")
+        
+        # Step 9: Impute missing values
+        categorical_cols = ["client_seg", "client_seg_1", "aum_band", "channel", "agent_segment", "branchoffice_code"]
+        pred_full = impute_missing_values(pred_full, categorical_cols)
+        
+        # Step 10: Pad history sequences
+        pad_udf = F.udf(lambda x: pad_history(x, self.max_seq_len), ArrayType(IntegerType()))
+        pred_full = pred_full.withColumn("hist_padded", pad_udf(F.col("hist_seq")))
+        
+        for i in range(self.max_seq_len):
+            pred_full = pred_full.withColumn(f"hist_{i}", F.col("hist_padded")[i])
+        
+        pred_full = pred_full.drop("hist_seq", "hist_padded")
+        
+        # Step 11: Encode categorical features
+        pred_full, updated_categorical_mappings = encode_categorical_features(
+            pred_full, categorical_cols, spark.sparkContext, categorical_mappings
+        )
+        
+        # Step 12: Build feature column list
+        if self.feature_cols is None:
+            self.feature_cols = get_feature_columns(num_classes, self.max_seq_len, categorical_cols)
+        
+        # Step 13: Convert to Pandas
+        pred_pd = pred_full.select(["cont_id", "business_month"] + self.feature_cols).toPandas()
+        pred_pd.fillna(0, inplace=True)
+        
+        return pred_pd
+    
+    def predict(
+        self, 
+        context: mlflow.pyfunc.PythonModelContext, 
+        model_input: Any
+    ) -> pd.DataFrame:
+        """
+        Make predictions on input data.
+        
+        Args:
+            context: MLflow context
+            model_input: Can be:
+                - Spark DataFrame (will be used directly)
+                - Pandas DataFrame (will be converted to Spark)
+                - Dict with parameters (will load from table)
+                
+        Returns:
+            Pandas DataFrame with predictions
+        """
+        spark = SparkSession.builder.getOrCreate()
+        
+        # Handle different input types
+        if isinstance(model_input, dict):
+            # If input is a dict, treat it as parameters for loading from table
+            table_name = model_input.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+            branchoffice_code = model_input.get("branchoffice_code")
+            business_month = model_input.get("business_month")
+            df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+        elif isinstance(model_input, DataFrame):
+            df_raw = model_input
+        else:
+            # Convert Pandas to Spark DataFrame
+            df_raw = spark.createDataFrame(model_input)
+        
+        # Ensure we have required artifacts
+        if self.prod2id is None or self.id2prod is None:
+            raise ValueError("Model artifacts not loaded. Ensure load_context was called properly.")
+        
+        # Preprocess data
+        pred_pd = self._preprocess_data(
+            spark=spark,
+            df_raw=df_raw,
+            prod2id=self.prod2id,
+            num_classes=self.num_classes,
+            categorical_mappings=self.categorical_mappings
+        )
+        
+        # Make predictions
+        if self.model is None:
+            raise ValueError("Model not loaded. Ensure load_context was called properly.")
+        
+        pred_probs = self.model.predict(pred_pd[self.feature_cols])
+        pred_class_ids = np.argmax(pred_probs, axis=1)
+        
+        # Convert predictions to product names
+        inv_label_map = {v: k for k, v in self.label_map.items()} if self.label_map else {}
+        final_id2prod = {
+            model_id: self.id2prod[original_id]
+            for model_id, original_id in inv_label_map.items()
+        } if inv_label_map and self.id2prod else {}
+        
+        pred_pd["pred_class_id"] = pred_class_ids
+        pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(
+            lambda x: final_id2prod.get(x, "UNKNOWN")
+        )
+        
+        # Add probability columns
+        num_classes_pred = pred_probs.shape[1]
+        for i in range(num_classes_pred):
+            pred_pd[f"prob_{i}"] = pred_probs[:, i]
+        pred_pd["pred_prob"] = pred_pd.apply(
+            lambda r: r[f"prob_{r['pred_class_id']}"], axis=1
+        )
+        
+        # Return relevant columns
+        return pred_pd[["cont_id", "pred_class_id", "pred_product", "pred_prob"] + 
+                       [f"prob_{i}" for i in range(num_classes_pred)]]
+
+
+
+
+
+
+==============================
+
+
+
+
+
+
+
+# ============================================================================
 # Register PreprocessAndPredictModel in Unity Catalog
 # ============================================================================
 # This cell registers the model after you've saved your artifacts from training
@@ -22,15 +396,6 @@ try:
 except ImportError:
     # Define the functions if not available
     import lightgbm as lgb
-    
-def save_model_artifacts(artifacts_dict, path):
-    os.makedirs(path, exist_ok=True)
-    if 'model' in artifacts_dict:
-        model = artifacts_dict.pop('model')
-        model.save_model(os.path.join(path, 'model.txt'))
-    with open(os.path.join(path, 'artifacts.pkl'), 'wb') as f:
-        pickle.dump(artifacts_dict, f)
-    print(f"Model artifacts saved to {path}")
 
 def load_model_artifacts(path):
     artifacts = {}
@@ -101,8 +466,8 @@ print("=" * 80)
 # Create model instance
 model_instance = PreprocessAndPredictModel()
 
-# Set artifacts manually (since we're not loading from MLflow context yet)
-model_instance.model = "eda_smartlist.models.final_lgbm_multiclass_model"
+# Set artifacts manually (model will be loaded from Unity Catalog below)
+model_instance.model = mlflow.lightgbm.load_model("models:/eda_smartlist.models.final_lgbm_multiclass_model/1")
 model_instance.prod2id = artifacts['prod2id']
 model_instance.id2prod = artifacts['id2prod']
 model_instance.label_map = artifacts['label_map']
@@ -151,7 +516,7 @@ with mlflow.start_run() as run:
             "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files/final_preprocessor.py"
         ],
         artifacts={
-            "model_path": "eda_smartlist.models.final_lgbm_multiclass_model",
+            "model_path": "models:/eda_smartlist.models.final_lgbm_multiclass_model/1",
             "artifacts_path": artifacts_dir
         },
         signature=signature,
@@ -181,29 +546,118 @@ print(f"  predictions = model.predict(input_data)")
 
 
 
-================================================================================
-STEP 1: Saving/Loading Model Artifacts
-================================================================================
-✓ Loaded artifacts from /Workspace/Users/rajesh.patil@equitable.com/Final_model_files
+======================
 
-================================================================================
-STEP 2: Creating Sample Input
-================================================================================
-✓ Created sample input
 
-================================================================================
-STEP 3: Testing Model
-================================================================================
-✗ Model prediction failed
-  Error: 'str' object has no attribute 'predict'
-Traceback (most recent call last):
-  File "/root/.ipykernel/1571/command-8615534164547256-1986917582", line 140, in <module>
-    sample_output = model_instance.predict(None, sample_input)
-                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/utils/data_validation.py", line 77, in wrapper
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/root/.ipykernel/1571/command-8615534164547255-3359061669", line 341, in predict
-    pred_probs = self.model.predict(pred_pd[self.feature_cols])
-                 ^^^^^^^^^^^^^^^^^^
-AttributeError: 'str' object has no attribute 'predict'
+
+
+
+
+
+
+# ============================================================================
+# Example: Using PreprocessAndPredictModel from Unity Catalog
+# ============================================================================
+# This cell demonstrates how to load and use the registered model
+
+import mlflow
+from pyspark.sql import SparkSession, functions as F
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+CATALOG_NAME = "eda_smartlist"
+SCHEMA_NAME = "models"
+MODEL_NAME = "preprocess_and_predict_model_lgbm"
+MODEL_VERSION = "2"  # Or "latest"
+
+MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
+
+# ============================================================================
+# STEP 1: Load Model from Unity Catalog
+# ============================================================================
+
+print("=" * 80)
+print("Loading Model from Unity Catalog")
+print("=" * 80)
+
+try:
+    model = mlflow.pyfunc.load_model(MODEL_URI)
+    print(f"✓ Model loaded successfully from {MODEL_URI}")
+except Exception as e:
+    print(f"✗ Failed to load model: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+
+# ============================================================================
+# STEP 2: Prepare Input Data
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("Preparing Input Data")
+print("=" * 80)
+
+spark = SparkSession.builder.getOrCreate()
+
+# Option 1: Use dict with parameters (model will load from table) - RECOMMENDED
+input_data_option1 = {
+    "table_name": "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
+    "branchoffice_code": "83",
+    "business_month": 202511
+}
+
+# # Option 2: Load data yourself and pass Spark DataFrame
+# df_input = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics") \
+#     .filter(F.col("branchoffice_code") == "83") \
+#     .filter(F.col("business_month") == 202511)
+# input_data_option2 = df_input
+
+# # Option 3: Use Pandas DataFrame (for small datasets)
+# input_data_option3 = df_input.limit(100).toPandas()
+
+print("✓ Input data prepared")
+
+# ============================================================================
+# STEP 3: Make Predictions
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("Making Predictions")
+print("=" * 80)
+
+try:
+    predictions = model.predict(input_data_option1)
+    print(f"✓ Predictions successful")
+    print(f"  Shape: {predictions.shape}")
+    print(f"  Columns: {list(predictions.columns)}")
+    print(f"\n  Sample predictions:")
+    display(predictions.head(10))
+except Exception as e:
+    print(f"✗ Prediction failed: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+
+# # ============================================================================
+# # STEP 4: Save Results (Optional)
+# # ============================================================================
+
+# print("\n" + "=" * 80)
+# print("Saving Results")
+# print("=" * 80)
+
+# try:
+#     # Convert to Spark DataFrame and save
+#     spark_df = spark.createDataFrame(predictions)
+#     spark_df.write.mode("overwrite").saveAsTable(
+#         "eda_smartlist.us_wealth_management_smartlist.predictions_latest"
+#     )
+#     print("✓ Results saved to table")
+# except Exception as e:
+#     print(f"⚠ Could not save results: {e}")
+
+# print("\n" + "=" * 80)
+# print("Complete!")
+# print("=" * 80)
