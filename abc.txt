@@ -309,11 +309,53 @@ class PreprocessAndPredictModel(mlflow.pyfunc.PythonModel):
             branchoffice_code = model_input.get("branchoffice_code")
             business_month = model_input.get("business_month")
             df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+        elif isinstance(model_input, pd.DataFrame):
+            # Check if this is a dict that was converted to DataFrame by MLflow
+            # If it only has dict keys (table_name, branchoffice_code, business_month), treat as dict
+            expected_dict_keys = {"table_name", "branchoffice_code", "business_month"}
+            if set(model_input.columns).issubset(expected_dict_keys) and len(model_input.columns) <= 3:
+                # This is likely a dict that was converted to DataFrame
+                if len(model_input) > 0:
+                    row_dict = model_input.iloc[0].to_dict()
+                    table_name = row_dict.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                    branchoffice_code = row_dict.get("branchoffice_code")
+                    business_month = row_dict.get("business_month")
+                else:
+                    table_name = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
+                    branchoffice_code = None
+                    business_month = None
+                df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+            else:
+                # Convert Pandas to Spark DataFrame (actual data)
+                df_raw = spark.createDataFrame(model_input)
         elif isinstance(model_input, DataFrame):
-            df_raw = model_input
+            # Check if this is a dict that was converted to Spark DataFrame
+            expected_dict_keys = {"table_name", "branchoffice_code", "business_month"}
+            if set(model_input.columns).issubset(expected_dict_keys) and len(model_input.columns) <= 3:
+                # This is likely a dict that was converted to DataFrame
+                row = model_input.first().asDict() if model_input.count() > 0 else {}
+                table_name = row.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                branchoffice_code = row.get("branchoffice_code")
+                business_month = row.get("business_month")
+                df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+            else:
+                df_raw = model_input
         else:
-            # Convert Pandas to Spark DataFrame
-            df_raw = spark.createDataFrame(model_input)
+            # Try to convert to dict first
+            try:
+                if hasattr(model_input, 'to_dict'):
+                    model_input_dict = model_input.to_dict()
+                    if isinstance(model_input_dict, dict):
+                        table_name = model_input_dict.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                        branchoffice_code = model_input_dict.get("branchoffice_code")
+                        business_month = model_input_dict.get("business_month")
+                        df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+                    else:
+                        df_raw = spark.createDataFrame(model_input)
+                else:
+                    df_raw = spark.createDataFrame(model_input)
+            except:
+                df_raw = spark.createDataFrame(model_input)
         
         # Ensure we have required artifacts
         if self.prod2id is None or self.id2prod is None:
@@ -358,364 +400,3 @@ class PreprocessAndPredictModel(mlflow.pyfunc.PythonModel):
         # Return relevant columns
         return pred_pd[["cont_id", "pred_class_id", "pred_product", "pred_prob"] + 
                        [f"prob_{i}" for i in range(num_classes_pred)]]
-
-
-
-
-
-
-==============================
-
-
-
-
-
-
-
-# ============================================================================
-# Register PreprocessAndPredictModel in Unity Catalog
-# ============================================================================
-# This cell registers the model after you've saved your artifacts from training
-
-import mlflow
-import mlflow.pyfunc
-from mlflow.models.signature import infer_signature
-from pyspark.sql import SparkSession
-import pandas as pd
-import os
-import tempfile
-import pickle
-import sys
-
-# Add path for preprocessing
-sys.path.append('/Workspace/Users/rajesh.patil@equitable.com/Final_model_files')
-
-# Import save/load functions if available, otherwise define them
-try:
-    from preprocess_and_predict import save_model_artifacts, load_model_artifacts
-except ImportError:
-    # Define the functions if not available
-    import lightgbm as lgb
-
-def load_model_artifacts(path):
-    artifacts = {}
-    artifacts_path = os.path.join(path, 'artifacts.pkl')
-    if os.path.exists(artifacts_path):
-        with open(artifacts_path, 'rb') as f:
-            other_artifacts = pickle.load(f)
-            artifacts.update(other_artifacts)
-    return artifacts
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-# Model registration details
-CATALOG_NAME = "eda_smartlist"  # Your Unity Catalog name
-SCHEMA_NAME = "models"  # Schema name in Unity Catalog
-MODEL_NAME = "preprocess_and_predict_model_lgbm"  # Model name
-
-# # Paths (adjust based on your setup)
-ARTIFACTS_PATH = "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files"
-
-# ============================================================================
-# STEP 1: Save Model Artifacts (if not already saved)
-# ============================================================================
-
-print("=" * 80)
-print("STEP 1: Saving/Loading Model Artifacts")
-print("=" * 80)
-
-# Load artifacts
-try:
-    artifacts = load_model_artifacts(ARTIFACTS_PATH)
-    print(f"✓ Loaded artifacts from {ARTIFACTS_PATH}")
-except Exception as e:
-    print(f"✗ Could not load artifacts from {ARTIFACTS_PATH}")
-    print(f"  Error: {e}")
-    print("  Please ensure artifacts are saved first using save_model_artifacts()")
-    raise
-
-# ============================================================================
-# STEP 2: Create Sample Input for Signature Inference
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("STEP 2: Creating Sample Input")
-print("=" * 80)
-
-spark = SparkSession.builder.getOrCreate()
-
-# Create sample input - dict with parameters (will load from table)
-sample_input = {
-    "table_name": "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
-    "branchoffice_code": "83",
-    "business_month": 202511
-}
-
-print(f"✓ Created sample input")
-
-# ============================================================================
-# STEP 3: Initialize Model and Get Sample Output
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("STEP 3: Testing Model")
-print("=" * 80)
-
-# Create model instance
-model_instance = PreprocessAndPredictModel()
-
-# Set artifacts manually (model will be loaded from Unity Catalog below)
-model_instance.model = mlflow.lightgbm.load_model("models:/eda_smartlist.models.final_lgbm_multiclass_model/1")
-model_instance.prod2id = artifacts['prod2id']
-model_instance.id2prod = artifacts['id2prod']
-model_instance.label_map = artifacts['label_map']
-model_instance.num_classes = artifacts['num_classes']
-model_instance.categorical_mappings = artifacts.get('categorical_mappings')
-model_instance.feature_cols = artifacts['feature_cols']
-model_instance.max_seq_len = artifacts.get('max_seq_len', 10)
-
-# Test prediction
-try:
-    sample_output = model_instance.predict(None, sample_input)
-    print(f"✓ Model prediction successful")
-    print(f"  Output shape: {sample_output.shape}")
-    print(f"  Output columns: {list(sample_output.columns)}")
-except Exception as e:
-    print(f"✗ Model prediction failed")
-    print(f"  Error: {e}")
-    import traceback
-    traceback.print_exc()
-    raise
-    
-# ============================================================================
-# STEP 5: Log and Register Model
-# ============================================================================
-
-artifacts_dir = "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files"
-
-print("\n" + "=" * 80)
-print("STEP 5: Logging and Registering Model")
-print("=" * 80)
-
-# Infer signature
-try:
-    signature = infer_signature(sample_input, sample_output)
-    print(f"✓ Inferred model signature")
-except Exception as e:
-    print(f"⚠ Could not infer signature: {e}")
-    signature = None
-
-# Log model
-with mlflow.start_run() as run:
-    mlflow.pyfunc.log_model(
-        artifact_path="preprocess_and_predict_model",
-        python_model=PreprocessAndPredictModel(),
-        code_paths=[
-            "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files/final_preprocessor.py"
-        ],
-        artifacts={
-            "model_path": "models:/eda_smartlist.models.final_lgbm_multiclass_model/1",
-            "artifacts_path": artifacts_dir
-        },
-        signature=signature,
-        input_example=sample_input if isinstance(sample_input, pd.DataFrame) else None
-    )
-    run_id = run.info.run_id
-    print(f"✓ Logged model with run_id: {run_id}")
-
-# Register the model in Unity Catalog with the specified name
-model_uri = f"runs:/{run_id}/preprocess_and_predict_model"
-registered_model = mlflow.register_model(
-    model_uri=model_uri,
-    name=f"{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}"
-)
-
-print(f"\n{'=' * 80}")
-print("SUCCESS!")
-print(f"{'=' * 80}")
-print(f"✓ Model registered successfully")
-print(f"  Model URI: models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{registered_model.version}")
-print(f"\nTo use the model:")
-print(f"  import mlflow")
-print(f"  model = mlflow.pyfunc.load_model('models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{registered_model.version}')")
-print(f"  predictions = model.predict(input_data)")
-
-
-
-
-
-======================
-
-
-
-
-
-
-
-
-# ============================================================================
-# Example: Using PreprocessAndPredictModel from Unity Catalog
-# ============================================================================
-# This cell demonstrates how to load and use the registered model
-
-import mlflow
-from pyspark.sql import SparkSession, functions as F
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
-CATALOG_NAME = "eda_smartlist"
-SCHEMA_NAME = "models"
-MODEL_NAME = "preprocess_and_predict_model_lgbm"
-MODEL_VERSION = "2"  # Or "latest"
-
-MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
-
-# ============================================================================
-# STEP 1: Load Model from Unity Catalog
-# ============================================================================
-
-print("=" * 80)
-print("Loading Model from Unity Catalog")
-print("=" * 80)
-
-try:
-    model = mlflow.pyfunc.load_model(MODEL_URI)
-    print(f"✓ Model loaded successfully from {MODEL_URI}")
-except Exception as e:
-    print(f"✗ Failed to load model: {e}")
-    import traceback
-    traceback.print_exc()
-    raise
-
-# ============================================================================
-# STEP 2: Prepare Input Data
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("Preparing Input Data")
-print("=" * 80)
-
-spark = SparkSession.builder.getOrCreate()
-
-# Option 1: Use dict with parameters (model will load from table) - RECOMMENDED
-input_data_option1 = {
-    "table_name": "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
-    "branchoffice_code": "83",
-    "business_month": 202511
-}
-
-# # Option 2: Load data yourself and pass Spark DataFrame
-# df_input = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics") \
-#     .filter(F.col("branchoffice_code") == "83") \
-#     .filter(F.col("business_month") == 202511)
-# input_data_option2 = df_input
-
-# # Option 3: Use Pandas DataFrame (for small datasets)
-# input_data_option3 = df_input.limit(100).toPandas()
-
-print("✓ Input data prepared")
-
-# ============================================================================
-# STEP 3: Make Predictions
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("Making Predictions")
-print("=" * 80)
-
-try:
-    predictions = model.predict(input_data_option1)
-    print(f"✓ Predictions successful")
-    print(f"  Shape: {predictions.shape}")
-    print(f"  Columns: {list(predictions.columns)}")
-    print(f"\n  Sample predictions:")
-    display(predictions.head(10))
-except Exception as e:
-    print(f"✗ Prediction failed: {e}")
-    import traceback
-    traceback.print_exc()
-    raise
-
-# # ============================================================================
-# # STEP 4: Save Results (Optional)
-# # ============================================================================
-
-# print("\n" + "=" * 80)
-# print("Saving Results")
-# print("=" * 80)
-
-# try:
-#     # Convert to Spark DataFrame and save
-#     spark_df = spark.createDataFrame(predictions)
-#     spark_df.write.mode("overwrite").saveAsTable(
-#         "eda_smartlist.us_wealth_management_smartlist.predictions_latest"
-#     )
-#     print("✓ Results saved to table")
-# except Exception as e:
-#     print(f"⚠ Could not save results: {e}")
-
-# print("\n" + "=" * 80)
-# print("Complete!")
-# print("=" * 80)
-
-
-
-✓ Loaded artifacts from /local_disk0/repl_tmp_data/ReplId-19b2f-9d155-b/tmpzjq6icon/artifacts/Final_model_files/artifacts.pkl
-✓ Model loaded successfully from models:/eda_smartlist.models.preprocess_and_predict_model_lgbm/2
-
-================================================================================
-Preparing Input Data
-================================================================================
-✓ Input data prepared
-
-================================================================================
-Making Predictions
-================================================================================
-{"ts": "2025-12-18 04:54:40.354", "level": "ERROR", "logger": "DataFrameQueryContextLogger", "msg": "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name `prod_lob` cannot be resolved. Did you mean one of the following? [`table_name`, `business_month`, `branchoffice_code`]. SQLSTATE: 42703", "context": {"file": "<command-8615534164547257>, line 39 in cell [5]", "line": "", "fragment": "col", "errorClass": "UNRESOLVED_COLUMN.WITH_SUGGESTION"}, "exception": {"class": "Py4JJavaError", "msg": "An error occurred while calling o1765.withColumn.\n: org.apache.spark.sql.catalyst.ExtendedAnalysisException: [UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name `prod_lob` cannot be resolved. Did you mean one of the following? [`table_name`, `business_month`, `branchoffice_code`]. SQLSTATE: 42703;\n'Project [table_name#20176, branchoffice_code#20177, business_month#20178L, CASE WHEN '`=`('prod_lob, LIFE) THEN LIFE_INSURANCE WHEN 'sub_product_level_1 IN (VLI,WL,UL/IUL,TERM,PROTECTIVE PRODUCT) THEN LIFE_INSURANCE WHEN 'like('sub_product_level_2, %LIFE%) THEN LIFE_INSURANCE WHEN 'sub_product_level_2 IN (VARIABLE UNIVERSAL LIFE,WHOLE LIFE,UNIVERSAL LIFE,INDEX UNIVERSAL LIFE,TERM PRODUCT,VARIABLE LIFE,SURVIVORSHIP WHOLE LIFE,MONY PROTECTIVE PRODUCT) THEN LIFE_INSURANCE WHEN 'prod_lob IN (GROUP RETIREMENT,INDIVIDUAL RETIREMENT) THEN RETIREMENT WHEN 'sub_product_level_1 IN (EQUIVEST,RETIREMENT 401K,ACCUMULATOR,RETIREMENT CORNERSTONE,SCS,INVESTMENT EDGE) THEN RETIREMENT WHEN 'or('or('or('like('sub_product_level_2, %403B%), 'like('sub_product_level_2, %401%)), 'like('sub_product_level_2, %IRA%)), 'like('sub_product_level_2, %SEP%)) THEN RETIREMENT WHEN '`=`('prod_lob, BROKER DEALER) THEN INVESTMENT WHEN 'sub_product_level_1 IN (INVESTMENT PRODUCT - DIRECT,INVESTMENT PRODUCT - BROKERAGE,INVESTMENT PRODUCT - ADVISORY,DIRECT,BROKERAGE,ADVISORY,CASH SOLICITOR) THEN INVESTMENT WHEN 'or('or('like('sub_product_level_2, %Investment%), 'like('sub_product_level_2, %Brokerage%)), 'like('sub_product_level_2, %Advisory%)) THEN INVESTMENT WHEN '`=`('prod_lob, NETWORK) THEN NETWORK_PRODUCTS WHEN 'or('`=`('sub_product_level_1, NETWORK PRODUCTS), '`=`('sub_product_level_2, NETWORK PRODUCTS)) THEN NETWORK_PRODUCTS WHEN 'and('`=`('prod_lob, OTHERS), '`=`('sub_product_level_1, HAS)) THEN DISABILITY WHEN '`=`('sub_product_level_2, HAS - DISABILITY) THEN DISABILITY WHEN '`=`('prod_lob, OTHERS) THEN HEALTH WHEN '`=`('sub_product_level_2, GROUP HEALTH PRODUCTS) THEN HEALTH ELSE OTHER END AS product_category#20182]\n+- LocalRelation [table_name#20176, branchoffice_code#20177, business_month#20178L]\n\n\tat org.apache.spark.sql.errors.QueryCompilationErrors$.unresolvedAttributeError(QueryCompilationErrors.scala:504)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.org$apache$spark$sql$catalyst$analysis$CheckAnalysis$$failUnresolvedAttribute(CheckAnalysis.scala:179)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$10(CheckAnalysis.scala:489)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$10$adapted(CheckAnalysis.scala:474)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:303)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1(TreeNode.scala:302)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1$adapted(TreeNode.scala:302)\n\tat scala.collection.IterableOnceOps.foreach(IterableOnce.scala:575)\n\tat scala.collection.IterableOnceOps.foreach$(IterableOnce.scala:573)\n\tat scala.collection.AbstractIterable.foreach(Iterable.scala:933)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:302)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1(TreeNode.scala:302)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1$adapted(TreeNode.scala:302)\n\tat scala.collection.immutable.List.foreach(List.scala:333)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:302)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1(TreeNode.scala:302)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1$adapted(TreeNode.scala:302)\n\tat scala.collection.immutable.Vector.foreach(Vector.scala:1895)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:302)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$9(CheckAnalysis.scala:474)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$9$adapted(CheckAnalysis.scala:474)\n\tat scala.collection.IterableOnceOps.foreach(IterableOnce.scala:575)\n\tat scala.collection.IterableOnceOps.foreach$(IterableOnce.scala:573)\n\tat scala.collection.AbstractIterable.foreach(Iterable.scala:933)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$2(CheckAnalysis.scala:474)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$2$adapted(CheckAnalysis.scala:307)\n\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:303)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis0(CheckAnalysis.scala:307)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis0$(CheckAnalysis.scala:278)\n\tat org.apache.spark.sql.catalyst.analysis.Analyzer.checkAnalysis0(Analyzer.scala:430)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis$1(CheckAnalysis.scala:263)\n\tat scala.runtime.java8.JFunction0$mcV$sp.apply(JFunction0$mcV$sp.scala:18)\n\tat com.databricks.spark.util.FrameProfiler$.record(FrameProfiler.scala:94)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis(CheckAnalysis.scala:250)\n\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis$(CheckAnalysis.scala:250)\n\tat org.apache.spark.sql.catalyst.analysis.Analyzer.checkAnalysis(Analyzer.scala:430)\n\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.$anonfun$resolveInFixedPoint$1(HybridAnalyzer.scala:254)\n\tat scala.runtime.java8.JFunction0$mcV$sp.apply(JFunction0$mcV$sp.scala:18)\n\tat org.apache.spark.sql.catalyst.QueryPlanningTracker$.withTracker(QueryPlanningTracker.scala:233)\n\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.resolveInFixedPoint(HybridAnalyzer.scala:254)\n\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.$anonfun$apply$1(HybridAnalyzer.scala:96)\n\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.withTrackedAnalyzerBridgeState(HybridAnalyzer.scala:131)\n\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.apply(HybridAnalyzer.scala:87)\n\tat org.apache.spark.sql.catalyst.analysis.Analyzer.$anonfun$executeAndCheck$1(Analyzer.scala:491)\n\tat org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper$.markInAnalyzer(AnalysisHelper.scala:425)\n\tat org.apache.spark.sql.catalyst.analysis.Analyzer.executeAndCheck(Analyzer.scala:491)\n\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$3(QueryExecution.scala:395)\n\tat com.databricks.spark.util.FrameProfiler$.record(FrameProfiler.scala:94)\n\tat org.apache.spark.sql.catalyst.QueryPlanningTracker.measurePhase(QueryPlanningTracker.scala:608)\n\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$6(QueryExecution.scala:790)\n\tat org.apache.spark.sql.execution.SQLExecution$.withExecutionPhase(SQLExecution.scala:155)\n\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$5(QueryExecution.scala:790)\n\tat org.apache.spark.sql.execution.QueryExecution$.withInternalError(QueryExecution.scala:1429)\n\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$2(QueryExecution.scala:783)\n\tat com.databricks.util.LexicalThreadLocal$Handle.runWith(LexicalThreadLocal.scala:63)\n\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$1(QueryExecution.scala:779)\n\tat org.apache.spark.sql.SparkSession.withActive(SparkSession.scala:1470)\n\tat org.apache.spark.sql.execution.QueryExecution.executePhase(QueryExecution.scala:779)\n\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$2(QueryExecution.scala:382)\n\tat com.databricks.sql.util.MemoryTrackerHelper.withMemoryTracking(MemoryTrackerHelper.scala:80)\n\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$1(QueryExecution.scala:381)\n\tat scala.util.Try$.apply(Try.scala:210)\n\tat org.apache.spark.util.Utils$.doTryWithCallerStacktrace(Utils.scala:1684)\n\tat org.apache.spark.util.Utils$.getTryWithCallerStacktrace(Utils.scala:1745)\n\tat org.apache.spark.util.LazyTry.get(LazyTry.scala:58)\n\tat org.apache.spark.sql.execution.QueryExecution.analyzed(QueryExecution.scala:427)\n\tat org.mlflow.spark.autologging.DatasourceAttributeExtractorBase.getTableInfos(DatasourceAttributeExtractor.scala:88)\n\tat org.mlflow.spark.autologging.DatasourceAttributeExtractorBase.getTableInfos$(DatasourceAttributeExtractor.scala:85)\n\tat org.mlflow.spark.autologging.ReplAwareDatasourceAttributeExtractor$.getTableInfos(DatasourceAttributeExtractor.scala:142)\n\tat org.mlflow.spark.autologging.ReplAwareSparkDataSourceListener.onSQLExecutionEnd(ReplAwareSparkDataSourceListener.scala:49)\n\tat org.mlflow.spark.autologging.SparkDataSourceListener.$anonfun$onOtherEvent$1(SparkDataSourceListener.scala:39)\n\tat scala.runtime.java8.JFunction0$mcV$sp.apply(JFunction0$mcV$sp.scala:18)\n\tat org.mlflow.spark.autologging.ExceptionUtils$.tryAndLogUnexpectedError(ExceptionUtils.scala:26)\n\tat org.mlflow.spark.autologging.SparkDataSourceListener.onOtherEvent(SparkDataSourceListener.scala:39)\n\tat org.apache.spark.scheduler.SparkListenerBus.doPostEvent(SparkListenerBus.scala:108)\n\tat org.apache.spark.scheduler.SparkListenerBus.doPostEvent$(SparkListenerBus.scala:28)\n\tat org.apache.spark.scheduler.AsyncEventQueue.doPostEvent(AsyncEventQueue.scala:46)\n\tat org.apache.spark.scheduler.AsyncEventQueue.doPostEvent(AsyncEventQueue.scala:46)\n\tat org.apache.spark.util.ListenerBus.postToAll(ListenerBus.scala:208)\n\tat org.apache.spark.util.ListenerBus.postToAll$(ListenerBus.scala:172)\n\tat org.apache.spark.scheduler.AsyncEventQueue.super$postToAll(AsyncEventQueue.scala:150)\n\tat org.apache.spark.scheduler.AsyncEventQueue.$anonfun$dispatch$1(AsyncEventQueue.scala:150)\n\tat scala.runtime.java8.JFunction0$mcJ$sp.apply(JFunction0$mcJ$sp.scala:17)\n\tat scala.util.DynamicVariable.withValue(DynamicVariable.scala:59)\n\tat org.apache.spark.scheduler.AsyncEventQueue.org$apache$spark$scheduler$AsyncEventQueue$$dispatch(AsyncEventQueue.scala:119)\n\tat org.apache.spark.scheduler.AsyncEventQueue$$anon$2.$anonfun$run$1(AsyncEventQueue.scala:115)\n\tat org.apache.spark.util.Utils$.tryOrStopSparkContext(Utils.scala:1572)\n\tat org.apache.spark.scheduler.AsyncEventQueue$$anon$2.run(AsyncEventQueue.scala:115)\n\tSuppressed: org.apache.spark.util.Utils$OriginalTryStackTraceException: Full stacktrace of original doTryWithCallerStacktrace caller\n\t\tat org.apache.spark.sql.errors.QueryCompilationErrors$.unresolvedAttributeError(QueryCompilationErrors.scala:504)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.org$apache$spark$sql$catalyst$analysis$CheckAnalysis$$failUnresolvedAttribute(CheckAnalysis.scala:179)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$10(CheckAnalysis.scala:489)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$10$adapted(CheckAnalysis.scala:474)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:303)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1(TreeNode.scala:302)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1$adapted(TreeNode.scala:302)\n\t\tat scala.collection.IterableOnceOps.foreach(IterableOnce.scala:575)\n\t\tat scala.collection.IterableOnceOps.foreach$(IterableOnce.scala:573)\n\t\tat scala.collection.AbstractIterable.foreach(Iterable.scala:933)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:302)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1(TreeNode.scala:302)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1$adapted(TreeNode.scala:302)\n\t\tat scala.collection.immutable.List.foreach(List.scala:333)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:302)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1(TreeNode.scala:302)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.$anonfun$foreachUp$1$adapted(TreeNode.scala:302)\n\t\tat scala.collection.immutable.Vector.foreach(Vector.scala:1895)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:302)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$9(CheckAnalysis.scala:474)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$9$adapted(CheckAnalysis.scala:474)\n\t\tat scala.collection.IterableOnceOps.foreach(IterableOnce.scala:575)\n\t\tat scala.collection.IterableOnceOps.foreach$(IterableOnce.scala:573)\n\t\tat scala.collection.AbstractIterable.foreach(Iterable.scala:933)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$2(CheckAnalysis.scala:474)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis0$2$adapted(CheckAnalysis.scala:307)\n\t\tat org.apache.spark.sql.catalyst.trees.TreeNode.foreachUp(TreeNode.scala:303)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis0(CheckAnalysis.scala:307)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis0$(CheckAnalysis.scala:278)\n\t\tat org.apache.spark.sql.catalyst.analysis.Analyzer.checkAnalysis0(Analyzer.scala:430)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.$anonfun$checkAnalysis$1(CheckAnalysis.scala:263)\n\t\tat scala.runtime.java8.JFunction0$mcV$sp.apply(JFunction0$mcV$sp.scala:18)\n\t\tat com.databricks.spark.util.FrameProfiler$.record(FrameProfiler.scala:94)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis(CheckAnalysis.scala:250)\n\t\tat org.apache.spark.sql.catalyst.analysis.CheckAnalysis.checkAnalysis$(CheckAnalysis.scala:250)\n\t\tat org.apache.spark.sql.catalyst.analysis.Analyzer.checkAnalysis(Analyzer.scala:430)\n\t\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.$anonfun$resolveInFixedPoint$1(HybridAnalyzer.scala:254)\n\t\tat scala.runtime.java8.JFunction0$mcV$sp.apply(JFunction0$mcV$sp.scala:18)\n\t\tat org.apache.spark.sql.catalyst.QueryPlanningTracker$.withTracker(QueryPlanningTracker.scala:233)\n\t\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.resolveInFixedPoint(HybridAnalyzer.scala:254)\n\t\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.$anonfun$apply$1(HybridAnalyzer.scala:96)\n\t\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.withTrackedAnalyzerBridgeState(HybridAnalyzer.scala:131)\n\t\tat org.apache.spark.sql.catalyst.analysis.resolver.HybridAnalyzer.apply(HybridAnalyzer.scala:87)\n\t\tat org.apache.spark.sql.catalyst.analysis.Analyzer.$anonfun$executeAndCheck$1(Analyzer.scala:491)\n\t\tat org.apache.spark.sql.catalyst.plans.logical.AnalysisHelper$.markInAnalyzer(AnalysisHelper.scala:425)\n\t\tat org.apache.spark.sql.catalyst.analysis.Analyzer.executeAndCheck(Analyzer.scala:491)\n\t\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$3(QueryExecution.scala:395)\n\t\tat com.databricks.spark.util.FrameProfiler$.record(FrameProfiler.scala:94)\n\t\tat org.apache.spark.sql.catalyst.QueryPlanningTracker.measurePhase(QueryPlanningTracker.scala:608)\n\t\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$6(QueryExecution.scala:790)\n\t\tat org.apache.spark.sql.execution.SQLExecution$.withExecutionPhase(SQLExecution.scala:155)\n\t\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$5(QueryExecution.scala:790)\n\t\tat org.apache.spark.sql.execution.QueryExecution$.withInternalError(QueryExecution.scala:1429)\n\t\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$2(QueryExecution.scala:783)\n\t\tat com.databricks.util.LexicalThreadLocal$Handle.runWith(LexicalThreadLocal.scala:63)\n\t\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$executePhase$1(QueryExecution.scala:779)\n\t\tat org.apache.spark.sql.SparkSession.withActive(SparkSession.scala:1470)\n\t\tat org.apache.spark.sql.execution.QueryExecution.executePhase(QueryExecution.scala:779)\n\t\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$2(QueryExecution.scala:382)\n\t\tat com.databricks.sql.util.MemoryTrackerHelper.withMemoryTracking(MemoryTrackerHelper.scala:80)\n\t\tat org.apache.spark.sql.execution.QueryExecution.$anonfun$lazyAnalyzed$1(QueryExecution.scala:381)\n\t\tat scala.util.Try$.apply(Try.scala:210)\n\t\tat org.apache.spark.util.Utils$.doTryWithCallerStacktrace(Utils.scala:1684)\n\t\tat org.apache.spark.util.LazyTry.tryT$lzycompute(LazyTry.scala:46)\n\t\tat org.apache.spark.util.LazyTry.tryT(LazyTry.scala:46)\n\t\tat org.apache.spark.util.LazyTry.get(LazyTry.scala:58)\n\t\tat org.apache.spark.sql.execution.QueryExecution.analyzed(QueryExecution.scala:427)\n\t\tat org.apache.spark.sql.execution.QueryExecution.assertAnalyzed(QueryExecution.scala:355)\n\t\tat org.apache.spark.sql.Dataset$.$anonfun$ofRows$1(Dataset.scala:108)\n\t\tat org.apache.spark.sql.SparkSession.withActive(SparkSession.scala:1470)\n\t\tat org.apache.spark.sql.SparkSession.$anonfun$withActiveAndFrameProfiler$1(SparkSession.scala:1477)\n\t\tat com.databricks.spark.util.FrameProfiler$.record(FrameProfiler.scala:94)\n\t\tat org.apache.spark.sql.SparkSession.withActiveAndFrameProfiler(SparkSession.scala:1477)\n\t\tat org.apache.spark.sql.Dataset$.ofRows(Dataset.scala:106)\n\t\tat org.apache.spark.sql.Dataset.$anonfun$org$apache$spark$sql$Dataset$$withPlan$1(Dataset.scala:5075)\n\t\tat com.databricks.spark.util.FrameProfiler$.record(FrameProfiler.scala:94)\n\t\tat org.apache.spark.sql.Dataset.org$apache$spark$sql$Dataset$$withPlan(Dataset.scala:5074)\n\t\tat org.apache.spark.sql.Dataset.select(Dataset.scala:1859)\n\t\tat org.apache.spark.sql.Dataset.$anonfun$withColumns$1(Dataset.scala:3237)\n\t\tat com.databricks.spark.util.FrameProfiler$.record(FrameProfiler.scala:94)\n\t\tat org.apache.spark.sql.Dataset.withColumns(Dataset.scala:3211)\n\t\tat org.apache.spark.sql.Dataset.withColumn(Dataset.scala:3175)\n\t\tat jdk.internal.reflect.GeneratedMethodAccessor522.invoke(Unknown Source)\n\t\tat java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)\n\t\tat java.base/java.lang.reflect.Method.invoke(Method.java:569)\n\t\tat py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)\n\t\tat py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:397)\n\t\tat py4j.Gateway.invoke(Gateway.java:306)\n\t\tat py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)\n\t\tat py4j.commands.CallCommand.execute(CallCommand.java:79)\n\t\tat py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:197)\n\t\tat py4j.ClientServerConnection.run(ClientServerConnection.java:117)\n\t\tat java.base/java.lang.Thread.run(Thread.java:840)\n", "stacktrace": [{"class": null, "method": "deco", "file": "/databricks/spark/python/pyspark/errors/exceptions/captured.py", "line": "269"}, {"class": null, "method": "get_return_value", "file": "/databricks/spark/python/lib/py4j-0.10.9.9-src.zip/py4j/protocol.py", "line": "327"}]}}
-Traceback (most recent call last):
-  File "/root/.ipykernel/12748/command-8615534164547257-3771761412", line 80, in <module>
-    predictions = model.predict(input_data)
-                  ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/__init__.py", line 804, in predict
-    return self._predict(data, params)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/__init__.py", line 854, in _predict
-    return self._predict_fn(data, params=params)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/model.py", line 1136, in predict
-    return self.python_model.predict(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/pyfunc/utils/data_validation.py", line 77, in wrapper
-    return func(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^
-  File "/root/.ipykernel/12748/command-8615534164547255-140806915", line 323, in predict
-    pred_pd = self._preprocess_data(
-              ^^^^^^^^^^^^^^^^^^^^^^
-  File "/root/.ipykernel/12748/command-8615534164547255-140806915", line 166, in _preprocess_data
-    df = create_product_category_column(df_raw)
-         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files/final_preprocessor.py", line 37, in create_product_category_column
-    return df.withColumn(
-           ^^^^^^^^^^^^^^
-  File "/databricks/spark/python/pyspark/instrumentation_utils.py", line 47, in wrapper
-    res = func(*args, **kwargs)
-          ^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/spark/python/pyspark/sql/dataframe.py", line 6331, in withColumn
-    return DataFrame(self._jdf.withColumn(colName, col._jc), self.sparkSession)
-                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/spark/python/lib/py4j-0.10.9.9-src.zip/py4j/java_gateway.py", line 1362, in __call__
-    return_value = get_return_value(
-                   ^^^^^^^^^^^^^^^^^
-  File "/databricks/spark/python/pyspark/errors/exceptions/captured.py", line 275, in deco
-    raise converted from None
-pyspark.errors.exceptions.captured.AnalysisException: [UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name `prod_lob` cannot be resolved. Did you mean one of the following? [`table_name`, `business_month`, `branchoffice_code`]. SQLSTATE: 42703;
-'Project [table_name#20176, branchoffice_code#20177, business_month#20178L, CASE WHEN '`=`('prod_lob, LIFE) THEN LIFE_INSURANCE WHEN 'sub_product_level_1 IN (VLI,WL,UL/IUL,TERM,PROTECTIVE PRODUCT) THEN LIFE_INSURANCE WHEN 'like('sub_product_level_2, %LIFE%) THEN LIFE_INSURANCE WHEN 'sub_product_level_2 IN (VARIABLE UNIVERSAL LIFE,WHOLE LIFE,UNIVERSAL LIFE,INDEX UNIVERSAL LIFE,TERM PRODUCT,VARIABLE LIFE,SURVIVORSHIP WHOLE LIFE,MONY PROTECTIVE PRODUCT) THEN LIFE_INSURANCE WHEN 'prod_lob IN (GROUP RETIREMENT,INDIVIDUAL RETIREMENT) THEN RETIREMENT WHEN 'sub_product_level_1 IN (EQUIVEST,RETIREMENT 401K,ACCUMULATOR,RETIREMENT CORNERSTONE,SCS,INVESTMENT EDGE) THEN RETIREMENT WHEN 'or('or('or('like('sub_product_level_2, %403B%), 'like('sub_product_level_2, %401%)), 'like('sub_product_level_2, %IRA%)), 'like('sub_product_level_2, %SEP%)) THEN RETIREMENT WHEN '`=`('prod_lob, BROKER DEALER) THEN INVESTMENT WHEN 'sub_product_level_1 IN (INVESTMENT PRODUCT - DIRECT,INVESTMENT PRODUCT - BROKERAGE,INVESTMENT PRODUCT - ADVISORY,DIRECT,BROKERAGE,ADVISORY,CASH SOLICITOR) THEN INVESTMENT WHEN 'or('or('like('sub_product_level_2, %Investment%), 'like('sub_product_level_2, %Brokerage%)), 'like('sub_product_level_2, %Advisory%)) THEN INVESTMENT WHEN '`=`('prod_lob, NETWORK) THEN NETWORK_PRODUCTS WHEN 'or('`=`('sub_product_level_1, NETWORK PRODUCTS), '`=`('sub_product_level_2, NETWORK PRODUCTS)) THEN NETWORK_PRODUCTS WHEN 'and('`=`('prod_lob, OTHERS), '`=`('sub_product_level_1, HAS)) THEN DISABILITY WHEN '`=`('sub_product_level_2, HAS - DISABILITY) THEN DISABILITY WHEN '`=`('prod_lob, OTHERS) THEN HEALTH WHEN '`=`('sub_product_level_2, GROUP HEALTH PRODUCTS) THEN HEALTH ELSE OTHER END AS product_category#20182]
-+- LocalRelation [table_name#20176, branchoffice_code#20177, business_month#20178L]
-
-✗ Prediction failed: [UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name `prod_lob` cannot be resolved. Did you mean one of the following? [`table_name`, `business_month`, `branchoffice_code`]. SQLSTATE: 42703;
-'Project [table_name#20176, branchoffice_code#20177, business_month#20178L, CASE WHEN '`=`('prod_lob, LIFE) THEN LIFE_INSURANCE WHEN 'sub_product_level_1 IN (VLI,WL,UL/IUL,TERM,PROTECTIVE PRODUCT) THEN LIFE_INSURANCE WHEN 'like('sub_product_level_2, %LIFE%) THEN LIFE_INSURANCE WHEN 'sub_product_level_2 IN (VARIABLE UNIVERSAL LIFE,WHOLE LIFE,UNIVERSAL LIFE,INDEX UNIVERSAL LIFE,TERM PRODUCT,VARIABLE LIFE,SURVIVORSHIP WHOLE LIFE,MONY PROTECTIVE PRODUCT) THEN LIFE_INSURANCE WHEN 'prod_lob IN (GROUP RETIREMENT,INDIVIDUAL RETIREMENT) THEN RETIREMENT WHEN 'sub_product_level_1 IN (EQUIVEST,RETIREMENT 401K,ACCUMULATOR,RETIREMENT CORNERSTONE,SCS,INVESTMENT EDGE) THEN RETIREMENT WHEN 'or('or('or('like('sub_product_level_2, %403B%), 'like('sub_product_level_2, %401%)), 'like('sub_product_level_2, %IRA%)), 'like('sub_product_level_2, %SEP%)) THEN RETIREMENT WHEN '`=`('prod_lob, BROKER DEALER) THEN INVESTMENT WHEN 'sub_product_level_1 IN (INVESTMENT PRODUCT - DIRECT,INVESTMENT PRODUCT - BROKERAGE,INVESTMENT PRODUCT - ADVISORY,DIRECT,BROKERAGE,ADVISORY,CASH SOLICITOR) THEN INVESTMENT WHEN 'or('or('like('sub_product_level_2, %Investment%), 'like('sub_product_level_2, %Brokerage%)), 'like('sub_product_level_2, %Advisory%)) THEN INVESTMENT WHEN '`=`('prod_lob, NETWORK) THEN NETWORK_PRODUCTS WHEN 'or('`=`('sub_product_level_1, NETWORK PRODUCTS), '`=`('sub_product_level_2, NETWORK PRODUCTS)) THEN NETWORK_PRODUCTS WHEN 'and('`=`('prod_lob, OTHERS), '`=`('sub_product_level_1, HAS)) THEN DISABILITY WHEN '`=`('sub_product_level_2, HAS - DISABILITY) THEN DISABILITY WHEN '`=`('prod_lob, OTHERS) THEN HEALTH WHEN '`=`('sub_product_level_2, GROUP HEALTH PRODUCTS) THEN HEALTH ELSE OTHER END AS product_category#20182]
-+- LocalRelation [table_name#20176, branchoffice_code#20177, business_month#20178L]
