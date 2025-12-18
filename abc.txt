@@ -79,13 +79,25 @@ class PreprocessAndPredictModel(mlflow.pyfunc.PythonModel):
         # Get artifacts directory from context
         artifacts_dir = context.artifacts.get("artifacts_path") or context.artifacts.get("model_path")
         
-        if not artifacts_dir:
-            # Try to find artifacts in the model directory
-            # MLflow stores artifacts in the model root
-            model_root = os.path.dirname(os.path.abspath(__file__))
-            artifacts_dir = os.path.join(model_root, "artifacts")
-        
-        # # Load LightGBM model
+        # Load LightGBM model from model_path artifact if available
+        model_uri = "models:/eda_smartlist.models.final_lgbm_multiclass_model/1"
+        if model_uri:
+            # If model_uri is a MLflow model URI, use mlflow.lightgbm.load_model
+            try:
+                self.model = mlflow.lightgbm.load_model(model_uri)
+                print(f"\u2713 Loaded LightGBM model from {model_uri}")
+            except Exception as e:
+                print(f"Could not load LightGBM model from {model_uri}: {e}")
+                self.model = None
+        # else:
+        #     # Try to load model from artifacts_dir if available
+        #     model_file = os.path.join(artifacts_dir, "model.txt")
+        #     if os.path.exists(model_file):
+        #         self.model = lgb.Booster(model_file=model_file)
+        #         print(f"\u2713 Loaded LightGBM model from {model_file}")
+        #     else:
+        #         self.model = None
+        #         print(f"LightGBM model not found in artifacts.")
         
         # Load other artifacts
         artifacts_file = os.path.join(artifacts_dir, "artifacts.pkl")
@@ -398,5 +410,303 @@ class PreprocessAndPredictModel(mlflow.pyfunc.PythonModel):
         )
         
         # Return relevant columns
-        return pred_pd[["cont_id", "pred_class_id", "pred_product", "pred_prob"] + 
+        return pred_pd[["cont_id","pred_class_id", "pred_product", "pred_prob"] + 
                        [f"prob_{i}" for i in range(num_classes_pred)]]
+
+
+
+
+
+====================
+
+
+
+
+
+# ============================================================================
+# Register PreprocessAndPredictModel in Unity Catalog
+# ============================================================================
+# This cell registers the model after you've saved your artifacts from training
+
+import mlflow
+import mlflow.pyfunc
+from mlflow.models.signature import infer_signature
+from pyspark.sql import SparkSession
+import pandas as pd
+import os
+import tempfile
+import pickle
+import sys
+
+# Add path for preprocessing
+sys.path.append('/Workspace/Users/rajesh.patil@equitable.com/Final_model_files')
+
+# Import save/load functions if available, otherwise define them
+try:
+    from preprocess_and_predict import save_model_artifacts, load_model_artifacts
+except ImportError:
+    # Define the functions if not available
+    import lightgbm as lgb
+
+def load_model_artifacts(path):
+    artifacts = {}
+    artifacts_path = os.path.join(path, 'artifacts.pkl')
+    if os.path.exists(artifacts_path):
+        with open(artifacts_path, 'rb') as f:
+            other_artifacts = pickle.load(f)
+            artifacts.update(other_artifacts)
+    return artifacts
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# Model registration details
+CATALOG_NAME = "eda_smartlist"  # Your Unity Catalog name
+SCHEMA_NAME = "models"  # Schema name in Unity Catalog
+MODEL_NAME = "preprocess_and_predict_model_lgbm"  # Model name
+
+# # Paths (adjust based on your setup)
+ARTIFACTS_PATH = "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files"
+
+# ============================================================================
+# STEP 1: Save Model Artifacts (if not already saved)
+# ============================================================================
+
+print("=" * 80)
+print("STEP 1: Saving/Loading Model Artifacts")
+print("=" * 80)
+
+# Load artifacts
+try:
+    artifacts = load_model_artifacts(ARTIFACTS_PATH)
+    print(f"✓ Loaded artifacts from {ARTIFACTS_PATH}")
+except Exception as e:
+    print(f"✗ Could not load artifacts from {ARTIFACTS_PATH}")
+    print(f"  Error: {e}")
+    print("  Please ensure artifacts are saved first using save_model_artifacts()")
+    raise
+
+# ============================================================================
+# STEP 2: Create Sample Input for Signature Inference
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 2: Creating Sample Input")
+print("=" * 80)
+
+spark = SparkSession.builder.getOrCreate()
+
+# Create sample input - dict with parameters (will load from table)
+sample_input = {
+    "table_name": "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
+    "branchoffice_code": "83",
+    "business_month": 202511
+}
+
+print(f"✓ Created sample input")
+
+# ============================================================================
+# STEP 3: Initialize Model and Get Sample Output
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 3: Testing Model")
+print("=" * 80)
+
+# Create model instance
+model_instance = PreprocessAndPredictModel()
+
+# Set artifacts manually (model will be loaded from Unity Catalog below)
+model_instance.model = mlflow.lightgbm.load_model("models:/eda_smartlist.models.final_lgbm_multiclass_model/1")
+model_instance.prod2id = artifacts['prod2id']
+model_instance.id2prod = artifacts['id2prod']
+model_instance.label_map = artifacts['label_map']
+model_instance.num_classes = artifacts['num_classes']
+model_instance.categorical_mappings = artifacts.get('categorical_mappings')
+model_instance.feature_cols = artifacts['feature_cols']
+model_instance.max_seq_len = artifacts.get('max_seq_len', 10)
+
+# Test prediction
+try:
+    sample_output = model_instance.predict(None, sample_input)
+    print(f"✓ Model prediction successful")
+    print(f"  Output shape: {sample_output.shape}")
+    print(f"  Output columns: {list(sample_output.columns)}")
+except Exception as e:
+    print(f"✗ Model prediction failed")
+    print(f"  Error: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+    
+# ============================================================================
+# STEP 5: Log and Register Model
+# ============================================================================
+
+artifacts_dir = "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files"
+
+print("\n" + "=" * 80)
+print("STEP 5: Logging and Registering Model")
+print("=" * 80)
+
+# Infer signature
+try:
+    signature = infer_signature(sample_input, sample_output)
+    print(f"✓ Inferred model signature")
+except Exception as e:
+    print(f"⚠ Could not infer signature: {e}")
+    signature = None
+
+# Log model
+with mlflow.start_run() as run:
+    mlflow.pyfunc.log_model(
+        artifact_path="preprocess_and_predict_model",
+        python_model=PreprocessAndPredictModel(),
+        code_paths=[
+            "/Workspace/Users/rajesh.patil@equitable.com/Final_model_files/final_preprocessor.py"
+        ],
+        artifacts={
+            "model_path": "models:/eda_smartlist.models.final_lgbm_multiclass_model/1",
+            "artifacts_path": artifacts_dir
+        },
+        signature=signature,
+        input_example=sample_input if isinstance(sample_input, pd.DataFrame) else None
+    )
+    run_id = run.info.run_id
+    print(f"✓ Logged model with run_id: {run_id}")
+
+# Register the model in Unity Catalog with the specified name
+model_uri = f"runs:/{run_id}/preprocess_and_predict_model"
+registered_model = mlflow.register_model(
+    model_uri=model_uri,
+    name=f"{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}"
+)
+
+print(f"\n{'=' * 80}")
+print("SUCCESS!")
+print(f"{'=' * 80}")
+print(f"✓ Model registered successfully")
+print(f"  Model URI: models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{registered_model.version}")
+print(f"\nTo use the model:")
+print(f"  import mlflow")
+print(f"  model = mlflow.pyfunc.load_model('models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{registered_model.version}')")
+print(f"  predictions = model.predict(input_data)")
+
+
+
+
+
+================================
+
+
+
+
+
+
+# ============================================================================
+# Example: Using PreprocessAndPredictModel from Unity Catalog
+# ============================================================================
+# This cell demonstrates how to load and use the registered model
+
+import mlflow
+from pyspark.sql import SparkSession, functions as F
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+CATALOG_NAME = "eda_smartlist"
+SCHEMA_NAME = "models"
+MODEL_NAME = "preprocess_and_predict_model_lgbm"
+MODEL_VERSION = "4"  # Or "latest"
+
+MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
+
+# ============================================================================
+# STEP 1: Load Model from Unity Catalog
+# ============================================================================
+
+print("=" * 80)
+print("Loading Model from Unity Catalog")
+print("=" * 80)
+
+try:
+    model = mlflow.pyfunc.load_model(MODEL_URI)
+    print(f"✓ Model loaded successfully from {MODEL_URI}")
+except Exception as e:
+    print(f"✗ Failed to load model: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+
+# ============================================================================
+# STEP 2: Prepare Input Data
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("Preparing Input Data")
+print("=" * 80)
+
+spark = SparkSession.builder.getOrCreate()
+
+# Option 1: Use dict with parameters (model will load from table) - RECOMMENDED
+input_data_option1 = {
+    "table_name": "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
+    "branchoffice_code": "83",
+    "business_month": 202511
+}
+
+# # Option 2: Load data yourself and pass Spark DataFrame
+# df_input = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics") \
+#     .filter(F.col("branchoffice_code") == "83") \
+#     .filter(F.col("business_month") == 202511)
+# input_data_option2 = df_input
+
+# # Option 3: Use Pandas DataFrame (for small datasets)
+# input_data_option3 = df_input.limit(100).toPandas()
+
+print("✓ Input data prepared")
+
+# ============================================================================
+# STEP 3: Make Predictions
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("Making Predictions")
+print("=" * 80)
+
+try:
+    predictions = model.predict(input_data_option1)
+    print(f"✓ Predictions successful")
+    print(f"  Shape: {predictions.shape}")
+    print(f"  Columns: {list(predictions.columns)}")
+    print(f"\n  Sample predictions:")
+    display(predictions.head(10))
+except Exception as e:
+    print(f"✗ Prediction failed: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+
+# # ============================================================================
+# # STEP 4: Save Results (Optional)
+# # ============================================================================
+
+# print("\n" + "=" * 80)
+# print("Saving Results")
+# print("=" * 80)
+
+# try:
+#     # Convert to Spark DataFrame and save
+#     spark_df = spark.createDataFrame(predictions)
+#     spark_df.write.mode("overwrite").saveAsTable(
+#         "eda_smartlist.us_wealth_management_smartlist.predictions_latest"
+#     )
+#     print("✓ Results saved to table")
+# except Exception as e:
+#     print(f"⚠ Could not save results: {e}")
+
+# print("\n" + "=" * 80)
+# print("Complete!")
+# print("=" * 80)
