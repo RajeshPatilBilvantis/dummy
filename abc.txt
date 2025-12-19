@@ -22,7 +22,7 @@ MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
 # Table and filter parameters
 TABLE_NAME = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
 BRANCHOFFICE_CODE = "83"  # Optional: set to None if you want all branch offices
-BUSINESS_MONTH = 202510  # Optional: set to None if you want all months
+BUSINESS_MONTH = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics").agg(F.max("business_month")).first()[0]
 
 # ============================================================================
 # STEP 1: Load Model from Unity Catalog
