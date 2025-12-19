@@ -505,7 +505,7 @@ print("=" * 80)
 try:
     # Convert to Spark DataFrame and save
     spark_df = spark.createDataFrame(predictions)
-    output_table = "eda_smartlist.us_wealth_management_smartlist.predictions_single_policy"
+    output_table = "eda_smartlist.us_wealth_management_smartlist.tp_predictions_single_policy"
     spark_df.write.mode("overwrite").saveAsTable(output_table)
     print(f"✓ Results saved to table: {output_table}")
 except Exception as e:
@@ -516,3 +516,62 @@ except Exception as e:
 print("\n" + "=" * 80)
 print("Complete!")
 print("=" * 80)
+
+
+
+
+
+
+
+
+  Summary:
+    Total predictions: 221,030
+    Unique clients (cont_id): 221,030
+
+  Top predicted products:
+    RETIREMENT: 115,107
+    LIFE_INSURANCE: 53,016
+    OTHER: 28,552
+    NETWORK_PRODUCTS: 17,739
+    INVESTMENT: 5,887
+    DISABILITY: 716
+    HEALTH: 13
+
+================================================================================
+Generating Talking Points with SHAP Analysis
+================================================================================
+Computing SHAP values for 221030 samples...
+Re-preprocessing sample data to get feature values...
+Computing SHAP values...
+  SHAP values type: <class 'numpy.ndarray'>, shape: (221030, 39, 7)
+  Detected 3D array format: (221030, 39, 7)
+✓ Computed SHAP values: (221030, 39)
+  Expected shape: (n_samples=221030, n_features=39)
+Generating talking points...
+⚠ Could not generate talking points: Must specify a fill 'value' or 'method'.
+Continuing without talking points...
+
+================================================================================
+Saving Results with Talking Points
+================================================================================
+Traceback (most recent call last):
+  File "/root/.ipykernel/10338/command-5995649959315307-1748779189", line 474, in <module>
+    predictions_with_tp[col] = predictions_with_tp[col].fillna(None)
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/pandas/util/_decorators.py", line 331, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/pandas/core/series.py", line 5298, in fillna
+    return super().fillna(
+           ^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/pandas/core/generic.py", line 6795, in fillna
+    value, method = validate_fillna_kwargs(value, method)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/pandas/util/_validators.py", line 388, in validate_fillna_kwargs
+    raise ValueError("Must specify a fill 'value' or 'method'.")
+ValueError: Must specify a fill 'value' or 'method'.
+✓ Results saved to table: eda_smartlist.us_wealth_management_smartlist.tp_predictions_single_policy
+
+================================================================================
+Complete!
+================================================================================
