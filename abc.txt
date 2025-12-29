@@ -1,11 +1,6 @@
-Usecases rating (scale of 1-5):
-
-Client Churn Prediction - 5
-Policy Lapse Risk Prediction - 5
-Sales Forecasting - 4.5
-Agent Performance Prediction - 4. 5
-Client Segmentation & Clustering - 4
-Agent Attrition Prediction - 4
-Geographic Sales Opportunity Analysis -  3.5
-Agent-Client Matching Optimization - 3
-Agent Commission Optimization - 3
+Scheduled the combined pipeline(model1 and model2) for the 10th day of every month - Completed
+Scored the usecases based on the data availability and business impact - Completed
+Added axa_party_id to both the standalone and combined pipeline model's output - Completed
+Added demographic features for the standalone model's output - Completed
+Documented the observations comparing the standalone and combined pipeline - Completed
+Disability and Health model creation - In progress
