@@ -1,6 +1,8 @@
-Scheduled the combined pipeline(model1 and model2) for the 10th day of every month - Completed
-Scored the usecases based on the data availability and business impact - Completed
-Added axa_party_id to both the standalone and combined pipeline model's output - Completed
-Added demographic features for the standalone model's output - Completed
-Documented the observations comparing the standalone and combined pipeline - Completed
-Disability and Health model creation - In progress
+How to use:::
+
+Run Cells 1–5 (data loading and preprocessing)
+Run Cell 6 (enhanced training)
+See results immediately
+Optional:
+Run Cell 7 for hyperparameter tuning (then re-run Cell 5)
+Run Cell 8 for ensemble method
