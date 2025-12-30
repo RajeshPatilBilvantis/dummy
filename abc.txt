@@ -282,19 +282,19 @@ else:
 
 
 
-[I 2025-12-30 11:58:30,196] A new study created in memory with name: lgbm_optimization
+[I 2025-12-30 12:07:02,182] A new study created in memory with name: lgbm_optimization
 ============================================================
 HYPERPARAMETER TUNING WITH OPTUNA
 ============================================================
 ⚠️  This will take 10-30 minutes depending on data size...
    You can stop early with Ctrl+C if needed.
 
-[W 2025-12-30 11:58:44,569] Trial 0 failed with parameters: {'learning_rate': 0.08394071292025611, 'num_leaves': 160, 'min_data_in_leaf': 56, 'feature_fraction': 0.7460784669030565, 'subsample': 0.9086653336113943, 'lambda_l1': 0.00029489693956314664, 'lambda_l2': 0.01407823911071531, 'max_depth': 8, 'min_gain_to_split': 0.4718657769484822, 'max_bin': 202} because of the following error: ValueError('The entry associated with the validation name "multi_logloss" and the metric name "val" is not found in the evaluation result list [(\'val\', \'multi_logloss\', 1.3474309473058805, False)].').
+[W 2025-12-30 12:07:16,500] Trial 0 failed with parameters: {'learning_rate': 0.06887290135247841, 'num_leaves': 148, 'min_data_in_leaf': 68, 'feature_fraction': 0.7412133957357806, 'subsample': 0.8461233153106296, 'lambda_l1': 0.1151771521124076, 'lambda_l2': 1.962415857891891e-08, 'max_depth': 14, 'min_gain_to_split': 0.020503631125684763, 'max_bin': 264} because of the following error: ValueError('The intermediate values are inconsistent with the objective valuesin terms of study directions. Please specify a metric to bemaximized for LightGBMPruningCallback.').
 Traceback (most recent call last):
   File "/databricks/python/lib/python3.12/site-packages/optuna/study/_optimize.py", line 196, in _run_trial
     value_or_values = func(trial)
                       ^^^^^^^^^^^
-  File "/root/.ipykernel/1778/command-7985721800795380-1392995234", line 62, in objective
+  File "/root/.ipykernel/1778/command-7985721800795380-818757185", line 62, in objective
     model_tune = lgb.train(
                  ^^^^^^^^^^
   File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 483, in safe_patch_function
@@ -319,7 +319,7 @@ Traceback (most recent call last):
                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/databricks/python/lib/python3.12/site-packages/lightgbm/engine.py", line 317, in train
     cb(
-  File "/databricks/python/lib/python3.12/site-packages/optuna_integration/lightgbm.py", line 138, in __call__
+  File "/databricks/python/lib/python3.12/site-packages/optuna_integration/lightgbm.py", line 156, in __call__
     raise ValueError(
-ValueError: The entry associated with the validation name "multi_logloss" and the metric name "val" is not found in the evaluation result list [('val', 'multi_logloss', 1.3474309473058805, False)].
-[W 2025-12-30 11:58:44,570] Trial 0 failed with value None.
+ValueError: The intermediate values are inconsistent with the objective valuesin terms of study directions. Please specify a metric to bemaximized for LightGBMPruningCallback.
+[W 2025-12-30 12:07:16,501] Trial 0 failed with value None.
