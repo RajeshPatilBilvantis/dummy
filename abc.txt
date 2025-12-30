@@ -6,3 +6,50 @@ See results immediately
 Optional:
 Run Cell 7 for hyperparameter tuning (then re-run Cell 5)
 Run Cell 8 for ensemble method
+
+
+
+
+
+
+[I 2025-12-30 11:06:00,521] A new study created in memory with name: lgbm_optimization
+============================================================
+HYPERPARAMETER TUNING WITH OPTUNA
+============================================================
+⚠️  This will take 10-30 minutes depending on data size...
+   You can stop early with Ctrl+C if needed.
+
+[W 2025-12-30 11:06:15,643] Trial 0 failed with parameters: {'learning_rate': 0.016934292828768748, 'num_leaves': 125, 'min_data_in_leaf': 92, 'feature_fraction': 0.9186851505220401, 'subsample': 0.9279495264279036, 'lambda_l1': 0.9908006931673967, 'lambda_l2': 3.966408265043625e-06, 'max_depth': 8, 'min_gain_to_split': 0.45725000533275684, 'max_bin': 250} because of the following error: ValueError('The entry associated with the validation name "valid_0" and the metric name "val-multi_logloss" is not found in the evaluation result list [(\'val\', \'multi_logloss\', 1.4570868957345915, False)].').
+Traceback (most recent call last):
+  File "/databricks/python/lib/python3.12/site-packages/optuna/study/_optimize.py", line 196, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "/root/.ipykernel/1778/command-7985721800795380-1136038742", line 62, in objective
+    model_tune = lgb.train(
+                 ^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 483, in safe_patch_function
+    patch_function(call_original, *args, **kwargs)
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 182, in patch_with_managed_run
+    result = patch_function(original, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/lightgbm/__init__.py", line 883, in train
+    return train_impl(_log_models, _log_datasets, original, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/lightgbm/__init__.py", line 796, in train_impl
+    model = original(*args, **kwargs)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 474, in call_original
+    return call_original_fn_with_event_logging(_original_fn, og_args, og_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 425, in call_original_fn_with_event_logging
+    original_fn_result = original_fn(*og_args, **og_kwargs)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 471, in _original_fn
+    original_result = original(*_og_args, **_og_kwargs)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/databricks/python/lib/python3.12/site-packages/lightgbm/engine.py", line 317, in train
+    cb(
+  File "/databricks/python/lib/python3.12/site-packages/optuna_integration/lightgbm.py", line 138, in __call__
+    raise ValueError(
+ValueError: The entry associated with the validation name "valid_0" and the metric name "val-multi_logloss" is not found in the evaluation result list [('val', 'multi_logloss', 1.4570868957345915, False)].
+[W 2025-12-30 11:06:15,645] Trial 0 failed with value None.
