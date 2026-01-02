@@ -4,7 +4,7 @@ Run Cells 1–5 (data loading and preprocessing)
 Run Cell 6 (enhanced training)
 See results immediately
 Optional:
-Run Cell 7 for hyperparameter tuning (then re-run Cell 5)
+Run Cell 7 for hyperparameter tuning (then re-run Cell 6)
 Run Cell 8 for ensemble method
 
 
