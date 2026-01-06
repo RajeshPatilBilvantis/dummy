@@ -1,325 +1,644 @@
-How to use:::
+5:::::::::::::
+from pyspark.sql import functions as F
 
-Run Cells 1–5 (data loading and preprocessing)
-Run Cell 6 (enhanced training)
-See results immediately
-Optional:
-Run Cell 7 for hyperparameter tuning (then re-run Cell 6)
-Run Cell 8 for ensemble method
+df_raw = df_raw.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY"
+    )
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .otherwise("OTHER")
+)
+# ------------- PARAMETERS -------------
+SAMPLE_FRACTION = 0.2   # set None to use full data (be careful with memory)
+MIN_EVENTS = 2          # minimum number of prior events to produce an example (2 => at least 1 history item + label)
+MAX_SEQ_LEN = 10        # history length used for padded features
+TRAIN_FRAC = 0.8
+VAL_FRAC = 0.1
+TEST_FRAC = 0.1
+RANDOM_SEED = 42
+
+# LightGBM training params - OPTIMIZED FOR BETTER F1 SCORES
+LGB_PARAMS = {
+    "objective": "multiclass",
+    "num_class": 6,               # we'll set dynamically later
+    "metric": "multi_logloss",
+    "boosting_type": "gbdt",
+    "learning_rate": 0.03,         # Reduced from 0.05 for better convergence
+    "num_leaves": 128,             # Increased from 64 for more model capacity
+    "min_data_in_leaf": 30,        # Reduced from 50 to allow more splits
+    "feature_fraction": 0.85,       # Increased from 0.8
+    "subsample": 0.85,             # Increased from 0.8
+    "subsample_freq": 1,
+    "lambda_l1": 0.1,              # Added L1 regularization
+    "lambda_l2": 1.5,              # Reduced from 2.0
+    "max_depth": 12,               # Added depth limit
+    "min_gain_to_split": 0.1,      # Added minimum gain threshold
+    "verbosity": -1,
+    "force_col_wise": True         # Better for wide datasets
+}
+NUM_BOOST_ROUND = 3000             # Increased from 2000
+EARLY_STOP = 100                   # Increased from 50 for more patience
+
+# ------------- IMPORTS -------------
+from pyspark.sql import functions as F, Window
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
+import numpy as np
+import pandas as pd
+from collections import Counter
+import lightgbm as lgb
+from sklearn.metrics import f1_score, accuracy_score, classification_report, confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
+import warnings
+warnings.filterwarnings('ignore')
+
+# ------------- 1) Load and optional sample -------------
+# Assumes df_raw exists (you had populated df_raw earlier). If not, re-load:
+# df_raw = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+
+# Keep only rows with product_category already populated
+df_events = df_raw.select("cont_id", "product_category", "register_date",
+                          "acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
+                          "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
+                          "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
+                          "psn_age","client_seg","client_seg_1","aum_band","channel","agent_segment",
+                          "branchoffice_code","policy_status"
+                         ).filter(
+    (F.col("cont_id").isNotNull()) &
+    (F.col("register_date").isNotNull()) &
+    (F.col("product_category").isNotNull())
+)
+
+if SAMPLE_FRACTION is not None:
+    print("Sampling fraction:", SAMPLE_FRACTION)
+    df_events = df_events.sample(withReplacement=False, fraction=float(SAMPLE_FRACTION), seed=RANDOM_SEED)
+
+print("Event rows (approx):", df_events.count())
+
+# ------------- 2) Keep only Active policies (optional but recommended) -------------
+df_events = df_events.filter(F.col("policy_status") == "Active")
+
+# ------------- 3) convert and order events per user -------------
+df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
+w = Window.partitionBy("cont_id").orderBy("register_ts")
+df_events = df_events.withColumn("event_idx", F.row_number().over(w))
+
+# ------------- 4) Build full product vocabulary from the ENTIRE (sampled) df_events -------------
+prod_list = df_events.select("product_category").distinct().rdd.map(lambda r: r[0]).collect()
+prod_list = sorted([p for p in prod_list if p is not None])
+prod2id = {p: i+1 for i, p in enumerate(prod_list)}   # start ids at 1; reserve 0 for padding
+id2prod = {v:k for k,v in prod2id.items()}
+NUM_CLASSES = len(prod2id)
+print("Vocabulary size (classes):", NUM_CLASSES)
+LGB_PARAMS["num_class"] = NUM_CLASSES + 1   # +1 if you want to reserve 0? We'll keep labels in 1..N
+
+# ------------- 5) Build grouped sequences RDD and dedupe consecutive -------------
+# Create RDD of (cont_id, (event_idx, product_category))
+rdd = df_events.select("cont_id","event_idx","product_category").rdd.map(lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"])))
+
+# group by cont_id
+grouped = rdd.groupByKey().mapValues(lambda evs: [p for _, p in sorted(list(evs), key=lambda x: x[0])])
+
+# remove consecutive duplicates (keeps only transitions)
+def dedupe_consecutive(seq):
+    if not seq:
+        return []
+    out = [seq[0]]
+    for x in seq[1:]:
+        if x != out[-1]:
+            out.append(x)
+    return out
+
+grouped = grouped.mapValues(dedupe_consecutive).filter(lambda kv: len(kv[1]) >= MIN_EVENTS)
+
+print("Users with >= MIN_EVENTS (after dedupe):", grouped.count())
+
+# ------------- 6) Sliding-window training example generation -------------
+def make_examples(kv):
+    cont_id, seq = kv
+    # map to ids, unknown -> 0 (shouldn't happen because vocab built from df_events)
+    seq_ids = [prod2id.get(x, 0) for x in seq]
+    n = len(seq_ids)
+    samples = []
+    for i in range(1, n):   # i is index of label in seq_ids
+        history = seq_ids[max(0, i - MAX_SEQ_LEN): i]   # history (most recent up to MAX_SEQ_LEN)
+        label = seq_ids[i]
+        if len(history) >= 1:   # history length >= 1
+            samples.append((cont_id, history, label))
+    return samples
+
+examples_rdd = grouped.flatMap(make_examples)
+
+# OPTIONAL: reduce volume by sampling examples (if still huge); comment out if you want full
+# examples_rdd = examples_rdd.sample(False, 1.0, seed=RANDOM_SEED)
+
+# Convert to DataFrame
+schema = StructType([
+    StructField("cont_id", StringType(), True),
+    StructField("hist_seq", ArrayType(IntegerType()), True),
+    StructField("label", IntegerType(), True),
+])
+examples_df = spark.createDataFrame(examples_rdd, schema).cache()
+
+print("Total training examples:", examples_df.count())
+display(examples_df.limit(10))
+
+# ------------- 7) Create tabular history-derived features (in Spark) -------------
+# We'll compute: seq_len, last_1, last_2, num_prior, unique_prior, num_switches, freq for each product id (sparse)
+def history_features_udf(hist):
+    # build summary stats as dict: we will compute in Python side for quicker dev, but create columns in Spark later
+    return None
+
+# easier: convert RDD -> DataFrame by mapping to tuples of features (done in Python for flexibility)
+def hist_to_features_row(x):
+    cont_id, hist, label = x
+    seq_len = len(hist)
+    last_1 = hist[-1] if seq_len >= 1 else 0
+    last_2 = hist[-2] if seq_len >= 2 else 0
+    last_3 = hist[-3] if seq_len >= 3 else 0  # Added third last
+    unique_prior = len(set(hist))
+    num_switches = sum(1 for i in range(1, seq_len) if hist[i] != hist[i-1])
+    
+    # Enhanced frequency features
+    freq = Counter(hist)
+    freq_features = [freq.get(i, 0) for i in range(1, NUM_CLASSES+1)]  # product ids are 1..NUM_CLASSES
+    
+    # Additional engineered features
+    # 1. Diversity ratio (unique products / total products)
+    diversity_ratio = unique_prior / seq_len if seq_len > 0 else 0.0
+    
+    # 2. Switch ratio (switches / sequence length)
+    switch_ratio = num_switches / seq_len if seq_len > 0 else 0.0
+    
+    # 3. Most frequent product ID
+    most_freq_product = max(freq.items(), key=lambda x: x[1])[0] if freq else 0
+    
+    # 4. Recency-weighted features (recent products weighted more)
+    recency_weight = sum((i+1) * hist[i] for i in range(seq_len)) if seq_len > 0 else 0
+    
+    # 5. Product transition patterns (last_1 to last_2 transition)
+    transition_pattern = (last_1 * 100 + last_2) if seq_len >= 2 else 0
+    
+    return (str(cont_id), hist, label, seq_len, last_1, last_2, last_3, unique_prior, 
+            num_switches, diversity_ratio, switch_ratio, most_freq_product, recency_weight,
+            transition_pattern, freq_features)
+
+# Because we will convert to Pandas, do a mapPartitions to Python to build features and then to Spark DF
+sampled = examples_rdd  # rename
+# WARNING: converting huge RDD to driver is expensive. We'll convert partitions to rows and then to Spark DF
+rows_rdd = sampled.map(hist_to_features_row)
+
+# define schema for features DF
+from pyspark.sql.types import ArrayType, LongType, DoubleType
+feat_schema = StructType([
+    StructField("cont_id", StringType(), True),
+    StructField("hist_seq", ArrayType(IntegerType()), True),
+    StructField("label", IntegerType(), True),
+    StructField("seq_len", IntegerType(), True),
+    StructField("last_1", IntegerType(), True),
+    StructField("last_2", IntegerType(), True),
+    StructField("last_3", IntegerType(), True),  # Added
+    StructField("unique_prior", IntegerType(), True),
+    StructField("num_switches", IntegerType(), True),
+    StructField("diversity_ratio", DoubleType(), True),  # Added
+    StructField("switch_ratio", DoubleType(), True),    # Added
+    StructField("most_freq_product", IntegerType(), True),  # Added
+    StructField("recency_weight", DoubleType(), True),  # Added
+    StructField("transition_pattern", IntegerType(), True),  # Added
+    StructField("freq_list", ArrayType(IntegerType()), True),
+])
+
+examples_feats_df = spark.createDataFrame(rows_rdd, feat_schema).cache()
+print("Examples with features:", examples_feats_df.count())
+display(examples_feats_df.limit(10))
+
+# ------------- 8) Expand freq_list into separate columns (Spark) -------------
+# create columns freq_1 ... freq_N
+for i in range(1, NUM_CLASSES+1):
+    examples_feats_df = examples_feats_df.withColumn(f"freq_{i}", F.col("freq_list")[i-1])
+# drop freq_list
+examples_feats_df = examples_feats_df.drop("freq_list")
+
+# ------------- 9) Build last snapshot static features per user and join -------------
+# last known static snapshot from df_events (we already had these cols in df_events)
+w2 = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
+client_snapshot = (df_events
+                   .withColumn("rn", F.row_number().over(w2))
+                   .filter(F.col("rn") == 1)
+                   .select("cont_id",
+                           "acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
+                           "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
+                           "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
+                           "psn_age","client_seg","client_seg_1","aum_band","channel","agent_segment","branchoffice_code")
+                   # Add engineered features
+                   .withColumn("total_assetmix", 
+                              F.coalesce(F.col("wc_assetmix_stocks"), F.lit(0)) +
+                              F.coalesce(F.col("wc_assetmix_bonds"), F.lit(0)) +
+                              F.coalesce(F.col("wc_assetmix_mutual_funds"), F.lit(0)) +
+                              F.coalesce(F.col("wc_assetmix_annuity"), F.lit(0)) +
+                              F.coalesce(F.col("wc_assetmix_deposits"), F.lit(0)) +
+                              F.coalesce(F.col("wc_assetmix_other_assets"), F.lit(0)))
+                   .withColumn("stocks_ratio", 
+                              F.when(F.col("total_assetmix") > 0,
+                                    F.coalesce(F.col("wc_assetmix_stocks"), F.lit(0)) / F.col("total_assetmix"))
+                              .otherwise(F.lit(0)))
+                   .withColumn("bonds_ratio",
+                              F.when(F.col("total_assetmix") > 0,
+                                    F.coalesce(F.col("wc_assetmix_bonds"), F.lit(0)) / F.col("total_assetmix"))
+                              .otherwise(F.lit(0)))
+                   .withColumn("annuity_ratio",
+                              F.when(F.col("total_assetmix") > 0,
+                                    F.coalesce(F.col("wc_assetmix_annuity"), F.lit(0)) / F.col("total_assetmix"))
+                              .otherwise(F.lit(0)))
+                   .withColumn("account_to_face_ratio",
+                              F.when(F.col("face_amt") > 0,
+                                    F.coalesce(F.col("acct_val_amt"), F.lit(0)) / F.col("face_amt"))
+                              .otherwise(F.lit(0)))
+                   .withColumn("cash_to_account_ratio",
+                              F.when(F.col("acct_val_amt") > 0,
+                                    F.coalesce(F.col("cash_val_amt"), F.lit(0)) / F.col("acct_val_amt"))
+                              .otherwise(F.lit(0))))
+
+# Left join - preserve all examples
+examples_full = examples_feats_df.join(client_snapshot, on="cont_id", how="left")
+
+print("Examples after join:", examples_full.count())
+
+# ------------- 10) Fill missing values sensibly -------------
+# numeric cols to fill 0 (excluding engineered ratio features which should use median)
+numeric_cols = [c for c, t in examples_full.dtypes if t in ("int", "double", "bigint", "float") 
+                and c not in ("label","seq_len","last_1","last_2","last_3","unique_prior","num_switches",
+                             "diversity_ratio","switch_ratio","stocks_ratio","bonds_ratio","annuity_ratio",
+                             "account_to_face_ratio","cash_to_account_ratio")]
+# we will fill numeric nulls with 0
+fill_dict = {c: 0 for c in numeric_cols}
+
+# Fill ratio features with median (more robust than 0)
+ratio_features = ["diversity_ratio","switch_ratio","stocks_ratio","bonds_ratio","annuity_ratio",
+                  "account_to_face_ratio","cash_to_account_ratio"]
+for rf in ratio_features:
+    if rf in examples_full.columns:
+        median_val = examples_full.select(F.percentile_approx(F.col(rf), 0.5).alias("median")).collect()[0]["median"]
+        if median_val is None:
+            median_val = 0.0
+        fill_dict[rf] = median_val
+
+# categorical modes
+categorical_cols = ["client_seg","client_seg_1","aum_band","channel","agent_segment","branchoffice_code"]
+modes = {}
+for c in categorical_cols:
+    try:
+        m = examples_full.groupBy(c).count().orderBy(F.desc("count")).first()[0]
+        modes[c] = m if m is not None else "UNKNOWN"
+    except:
+        modes[c] = "UNKNOWN"
+
+examples_full = examples_full.fillna(fill_dict)
+for c in categorical_cols:
+    examples_full = examples_full.withColumn(c, F.when(F.col(c).isNull(), F.lit(modes[c])).otherwise(F.col(c)))
+
+# ------------- 11) Convert hist_seq to fixed-length padded columns (for LightGBM tabular) -------------
+def pad_history(hist):
+    arr = hist[-MAX_SEQ_LEN:] if hist is not None else []
+    pad_len = MAX_SEQ_LEN - len(arr)
+    return [0]*pad_len + arr
+
+pad_udf = F.udf(lambda x: pad_history(x), ArrayType(IntegerType()))
+examples_full = examples_full.withColumn("hist_padded", pad_udf(F.col("hist_seq")))
+
+# expand hist_padded into hist_0 ... hist_{MAX_SEQ_LEN-1}
+for i in range(MAX_SEQ_LEN):
+    examples_full = examples_full.withColumn(f"hist_{i}", F.col("hist_padded")[i])
+
+examples_full = examples_full.drop("hist_seq", "hist_padded")
+
+# ------------- 12) Final column list for modeling -------------
+# label = 'label' (1..N)
+model_feature_cols = [f"hist_{i}" for i in range(MAX_SEQ_LEN)] + \
+                     ["seq_len","last_1","last_2","last_3","unique_prior","num_switches",
+                      "diversity_ratio","switch_ratio","most_freq_product","recency_weight",
+                      "transition_pattern"] + \
+                     [f"freq_{i}" for i in range(1, NUM_CLASSES+1)] + \
+                     ["acct_val_amt","face_amt","cash_val_amt","wc_total_assets",
+                      "wc_assetmix_stocks","wc_assetmix_bonds","wc_assetmix_mutual_funds",
+                      "wc_assetmix_annuity","wc_assetmix_deposits","wc_assetmix_other_assets",
+                      "total_assetmix","stocks_ratio","bonds_ratio","annuity_ratio",
+                      "account_to_face_ratio","cash_to_account_ratio",
+                      "psn_age"]
+# convert categorical strings to index using simple string->index map (lightgbm accepts categorical as int)
+# create mapping for categorical_cols
+for c in categorical_cols:
+    vals = [r[0] for r in examples_full.select(c).distinct().collect()]
+    m = {v:i for i,v in enumerate(sorted([str(x) for x in vals]))}
+    b = spark.sparkContext.broadcast(m)
+    examples_full = examples_full.withColumn(c + "_idx", F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN")))
+    # NOTE: converting to integer index using udf
+    examples_full = examples_full.withColumn(c + "_idx", F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(F.col(c + "_idx")))
+    model_feature_cols.append(c + "_idx")
+
+# Ensure label values are in 1..NUM_CLASSES
+# If needed remap label ranges (they already are product ids 1..NUM_CLASSES)
+examples_full = examples_full.withColumn("label", F.col("label").cast(IntegerType()))
+
+# ------------- 13) Split train/val/test (random) and convert to Pandas -------------
+train_spark, val_spark, test_spark = examples_full.randomSplit([TRAIN_FRAC, VAL_FRAC, TEST_FRAC], seed=RANDOM_SEED)
+
+print("Train / Val / Test counts:", train_spark.count(), val_spark.count(), test_spark.count())
+
+# persist to speed up conversion
+train_spark = train_spark.cache()
+val_spark = val_spark.cache()
+test_spark = test_spark.cache()
+
+train_pd = train_spark.select(["cont_id","label"] + model_feature_cols).toPandas()
+val_pd   = val_spark.select(["cont_id","label"] + model_feature_cols).toPandas()
+test_pd  = test_spark.select(["cont_id","label"] + model_feature_cols).toPandas()
+
+# ------------- 14) Final data sanity & fillna in pandas -------------
+train_pd.fillna(0, inplace=True)
+val_pd.fillna(0, inplace=True)
+test_pd.fillna(0, inplace=True)
+
+# Ensure label is zero-based for LightGBM (optional) -- we'll make labels 0..K-1
+label_map = {lab: i for i, lab in enumerate(sorted(train_pd["label"].unique()))}
+train_pd["label0"] = train_pd["label"].map(label_map)
+val_pd["label0"] = val_pd["label"].map(lambda x: label_map.get(x, 0))
+test_pd["label0"] = test_pd["label"].map(lambda x: label_map.get(x, 0))
+
+# Update params num_class to exact count
+num_classes = len(label_map)
+LGB_PARAMS["num_class"] = num_classes
+
+print("Num classes:", num_classes)
+print("Train shape:", train_pd.shape, "Val shape:", val_pd.shape, "Test shape:", test_pd.shape)
 
 
+==============================
 
 
-
-
-[I 2025-12-30 11:06:00,521] A new study created in memory with name: lgbm_optimization
-============================================================
-HYPERPARAMETER TUNING WITH OPTUNA
-============================================================
-⚠️  This will take 10-30 minutes depending on data size...
-   You can stop early with Ctrl+C if needed.
-
-[W 2025-12-30 11:06:15,643] Trial 0 failed with parameters: {'learning_rate': 0.016934292828768748, 'num_leaves': 125, 'min_data_in_leaf': 92, 'feature_fraction': 0.9186851505220401, 'subsample': 0.9279495264279036, 'lambda_l1': 0.9908006931673967, 'lambda_l2': 3.966408265043625e-06, 'max_depth': 8, 'min_gain_to_split': 0.45725000533275684, 'max_bin': 250} because of the following error: ValueError('The entry associated with the validation name "valid_0" and the metric name "val-multi_logloss" is not found in the evaluation result list [(\'val\', \'multi_logloss\', 1.4570868957345915, False)].').
-Traceback (most recent call last):
-  File "/databricks/python/lib/python3.12/site-packages/optuna/study/_optimize.py", line 196, in _run_trial
-    value_or_values = func(trial)
-                      ^^^^^^^^^^^
-  File "/root/.ipykernel/1778/command-7985721800795380-1136038742", line 62, in objective
-    model_tune = lgb.train(
-                 ^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 483, in safe_patch_function
-    patch_function(call_original, *args, **kwargs)
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 182, in patch_with_managed_run
-    result = patch_function(original, *args, **kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/lightgbm/__init__.py", line 883, in train
-    return train_impl(_log_models, _log_datasets, original, *args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/lightgbm/__init__.py", line 796, in train_impl
-    model = original(*args, **kwargs)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 474, in call_original
-    return call_original_fn_with_event_logging(_original_fn, og_args, og_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 425, in call_original_fn_with_event_logging
-    original_fn_result = original_fn(*og_args, **og_kwargs)
-                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 471, in _original_fn
-    original_result = original(*_og_args, **_og_kwargs)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/lightgbm/engine.py", line 317, in train
-    cb(
-  File "/databricks/python/lib/python3.12/site-packages/optuna_integration/lightgbm.py", line 138, in __call__
-    raise ValueError(
-ValueError: The entry associated with the validation name "valid_0" and the metric name "val-multi_logloss" is not found in the evaluation result list [('val', 'multi_logloss', 1.4570868957345915, False)].
-[W 2025-12-30 11:06:15,645] Trial 0 failed with value None.
-
-
-
-
-
-
-
-
-
+6:::::::
 # ============================================
-# STEP 20: HYPERPARAMETER TUNING WITH OPTUNA (OPTIONAL)
-# ============================================
-#
-# This cell is OPTIONAL but recommended for best performance.
-# It will tune hyperparameters and update LGB_PARAMS_TUNED.
-# After running this, re-run Cell 5 to train with tuned parameters.
-#
+# FEATURE IMPORTANCE ANALYSIS
 # ============================================
 
-# Install optuna if needed
-# %pip install optuna
+print("=" * 80)
+print("FEATURE IMPORTANCE ANALYSIS")
+print("=" * 80)
 
-try:
-    import optuna
-    from optuna.integration import LightGBMPruningCallback
-    OPTUNA_AVAILABLE = True
-except ImportError:
-    print("⚠️  Optuna not available. Install with: %pip install optuna")
-    print("   Skipping hyperparameter tuning...")
-    OPTUNA_AVAILABLE = False
+# Get feature importance from the model
+feature_importance = model.feature_importance(importance_type='gain')
+feature_importance_df = pd.DataFrame({
+    'feature': feature_cols_final,
+    'importance': feature_importance
+}).sort_values('importance', ascending=False)
 
-if OPTUNA_AVAILABLE:
-    print("="*60)
-    print("HYPERPARAMETER TUNING WITH OPTUNA")
-    print("="*60)
-    print("⚠️  This will take 10-30 minutes depending on data size...")
-    print("   You can stop early with Ctrl+C if needed.\n")
-    
-    def objective(trial):
-        """Optuna objective function for hyperparameter tuning"""
-        
-        # Suggest hyperparameters
-        params = {
-            "objective": "multiclass",
-            "num_class": num_classes,
-            "metric": "multi_logloss",
-            "boosting_type": "gbdt",
-            "verbosity": -1,
-            "force_row_wise": True,
-            
-            # Tune these parameters
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
-            "num_leaves": trial.suggest_int("num_leaves", 64, 256),
-            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 100),
-            "feature_fraction": trial.suggest_float("feature_fraction", 0.7, 0.95),
-            "subsample": trial.suggest_float("subsample", 0.7, 0.95),
-            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
-            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
-            "max_depth": trial.suggest_int("max_depth", 8, 15),
-            "min_gain_to_split": trial.suggest_float("min_gain_to_split", 0.0, 1.0),
-            "max_bin": trial.suggest_int("max_bin", 200, 300),
-        }
-        
-        # Create datasets
-        train_ds_tune = lgb.Dataset(train_pd[feature_cols_final], label=train_pd["label0"])
-        val_ds_tune = lgb.Dataset(val_pd[feature_cols_final], label=val_pd["label0"], reference=train_ds_tune)
-        
-        # Train model
-        pruning_callback = LightGBMPruningCallback(trial, "val-multi_logloss")
-        
-        model_tune = lgb.train(
-            params,
-            train_ds_tune,
-            valid_sets=[val_ds_tune],
-            valid_names=["val"],
-            num_boost_round=500,  # Fewer rounds for tuning
-            callbacks=[pruning_callback, lgb.early_stopping(30)]
-        )
-        
-        # Evaluate
-        val_pred_prob = model_tune.predict(val_pd[feature_cols_final])
-        val_pred = np.argmax(val_pred_prob, axis=1)
-        f1 = f1_score(val_pd["label0"], val_pred, average="weighted")
-        
-        return f1
-    
-    # Run optimization
-    study = optuna.create_study(direction="maximize", study_name="lgbm_optimization")
-    study.optimize(objective, n_trials=20, timeout=3600)  # 20 trials or 1 hour
-    
-    print("\n" + "="*60)
-    print("OPTIMIZATION RESULTS")
-    print("="*60)
-    print(f"🎯 Best F1-weighted score: {study.best_value:.4f}")
-    print("\n📋 Best parameters found:")
-    for key, value in study.best_params.items():
-        print(f"  {key}: {value}")
-    
-    # Update LGB_PARAMS_TUNED with best parameters
-    LGB_PARAMS_TUNED = LGB_PARAMS_ENHANCED.copy()
-    LGB_PARAMS_TUNED.update(study.best_params)
-    LGB_PARAMS_TUNED["objective"] = "multiclass"
-    LGB_PARAMS_TUNED["num_class"] = num_classes
-    LGB_PARAMS_TUNED["metric"] = "multi_logloss"
-    LGB_PARAMS_TUNED["verbosity"] = -1
-    LGB_PARAMS_TUNED["force_row_wise"] = True
-    
-    print("\n✅ Tuned parameters saved to LGB_PARAMS_TUNED")
-    print("💡 Now re-run Cell 5 to train model with tuned parameters!")
-else:
-    print("\n⚠️  Skipping hyperparameter tuning (Optuna not available)")
-    print("   Using enhanced parameters from Cell 5")
-    # LGB_PARAMS_TUNED already set in Cell 5
+print("\n📊 Top 20 Most Important Features:")
+display(feature_importance_df.head(20))
+
+# Plot feature importance
+import matplotlib.pyplot as plt
+plt.figure(figsize=(12, 8))
+top_features = feature_importance_df.head(20)
+plt.barh(range(len(top_features)), top_features['importance'].values)
+plt.yticks(range(len(top_features)), top_features['feature'].values)
+plt.xlabel('Importance (Gain)')
+plt.title('Top 20 Feature Importance')
+plt.gca().invert_yaxis()
+plt.tight_layout()
+plt.show()
+
+print("\n✅ Feature importance analysis complete")
+print("=" * 80)
 
 
-
-========================================================================================
-==========================================================================================
+==============================
 
 
-# ============================================
-# STEP 20: HYPERPARAMETER TUNING WITH OPTUNA (OPTIONAL)
-# ============================================
-#
-# This cell is OPTIONAL but recommended for best performance.
-# It will tune hyperparameters and update LGB_PARAMS_TUNED.
-# After running this, re-run Cell 5 to train with tuned parameters.
-#
-# ============================================
+7:::::::
+# Model Improvements Summary
 
-# Install optuna if needed
-# %pip install optuna
+## Key Improvements Made to Boost F1 Scores:
 
-try:
-    import optuna
-    from optuna.integration import LightGBMPruningCallback
-    OPTUNA_AVAILABLE = True
-except ImportError:
-    print("⚠️  Optuna not available. Install with: %pip install optuna")
-    print("   Skipping hyperparameter tuning...")
-    OPTUNA_AVAILABLE = False
+### 1. **Class Imbalance Handling**
+   - Added class weights using `compute_class_weight('balanced')` to handle imbalanced classes
+   - Applied sample weights during training to give more importance to minority classes
+   - This should improve recall for underrepresented classes (e.g., Class 1 and Class 5)
 
-if OPTUNA_AVAILABLE:
-    print("="*60)
-    print("HYPERPARAMETER TUNING WITH OPTUNA")
-    print("="*60)
-    print("⚠️  This will take 10-30 minutes depending on data size...")
-    print("   You can stop early with Ctrl+C if needed.\n")
-    
-    def objective(trial):
-        """Optuna objective function for hyperparameter tuning"""
-        
-        # Suggest hyperparameters
-        params = {
-            "objective": "multiclass",
-            "num_class": num_classes,
-            "metric": "multi_logloss",
-            "boosting_type": "gbdt",
-            "verbosity": -1,
-            "force_row_wise": True,
-            
-            # Tune these parameters
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.1, log=True),
-            "num_leaves": trial.suggest_int("num_leaves", 64, 256),
-            "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 100),
-            "feature_fraction": trial.suggest_float("feature_fraction", 0.7, 0.95),
-            "subsample": trial.suggest_float("subsample", 0.7, 0.95),
-            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
-            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
-            "max_depth": trial.suggest_int("max_depth", 8, 15),
-            "min_gain_to_split": trial.suggest_float("min_gain_to_split", 0.0, 1.0),
-            "max_bin": trial.suggest_int("max_bin", 200, 300),
-        }
-        
-        # Create datasets
-        train_ds_tune = lgb.Dataset(train_pd[feature_cols_final], label=train_pd["label0"])
-        val_ds_tune = lgb.Dataset(val_pd[feature_cols_final], label=val_pd["label0"], reference=train_ds_tune)
-        
-        # Train model
-        pruning_callback = LightGBMPruningCallback(trial, "val", "multi_logloss")
-        
-        model_tune = lgb.train(
-            params,
-            train_ds_tune,
-            valid_sets=[val_ds_tune],
-            valid_names=["val"],
-            num_boost_round=500,  # Fewer rounds for tuning
-            callbacks=[pruning_callback, lgb.early_stopping(30)]
-        )
-        
-        # Evaluate
-        val_pred_prob = model_tune.predict(val_pd[feature_cols_final])
-        val_pred = np.argmax(val_pred_prob, axis=1)
-        f1 = f1_score(val_pd["label0"], val_pred, average="weighted")
-        
-        return f1
-    
-    # Run optimization
-    study = optuna.create_study(direction="maximize", study_name="lgbm_optimization")
-    study.optimize(objective, n_trials=20, timeout=3600)  # 20 trials or 1 hour
-    
-    print("\n" + "="*60)
-    print("OPTIMIZATION RESULTS")
-    print("="*60)
-    print(f"🎯 Best F1-weighted score: {study.best_value:.4f}")
-    print("\n📋 Best parameters found:")
-    for key, value in study.best_params.items():
-        print(f"  {key}: {value}")
-    
-    # Update LGB_PARAMS_TUNED with best parameters
-    LGB_PARAMS_TUNED = LGB_PARAMS_ENHANCED.copy()
-    LGB_PARAMS_TUNED.update(study.best_params)
-    LGB_PARAMS_TUNED["objective"] = "multiclass"
-    LGB_PARAMS_TUNED["num_class"] = num_classes
-    LGB_PARAMS_TUNED["metric"] = "multi_logloss"
-    LGB_PARAMS_TUNED["verbosity"] = -1
-    LGB_PARAMS_TUNED["force_row_wise"] = True
-    
-    print("\n✅ Tuned parameters saved to LGB_PARAMS_TUNED")
-    print("💡 Now re-run Cell 5 to train model with tuned parameters!")
-else:
-    print("\n⚠️  Skipping hyperparameter tuning (Optuna not available)")
-    print("   Using enhanced parameters from Cell 5")
-    # LGB_PARAMS_TUNED already set in Cell 5
+### 2. **Hyperparameter Optimization**
+   - Reduced learning rate from 0.05 to 0.03 for better convergence
+   - Increased num_leaves from 64 to 128 for more model capacity
+   - Reduced min_data_in_leaf from 50 to 30 to allow more splits
+   - Added L1 regularization (lambda_l1: 0.1)
+   - Adjusted L2 regularization (lambda_l2: 1.5)
+   - Added max_depth limit (12) and min_gain_to_split (0.1)
+   - Increased num_boost_round from 2000 to 3000
+   - Increased early_stopping patience from 50 to 100
+
+### 3. **Enhanced Feature Engineering**
+   - Added `last_3` feature (third most recent product)
+   - Added `diversity_ratio` (unique products / total products)
+   - Added `switch_ratio` (switches / sequence length)
+   - Added `most_freq_product` (most frequently purchased product)
+   - Added `recency_weight` (recency-weighted sum of products)
+   - Added `transition_pattern` (encoded last_1 to last_2 transition)
+   - Added asset mix ratios: `stocks_ratio`, `bonds_ratio`, `annuity_ratio`
+   - Added `total_assetmix` (sum of all asset mix components)
+   - Added `account_to_face_ratio` and `cash_to_account_ratio`
+
+### 4. **Improved Missing Value Handling**
+   - Ratio features now use median imputation instead of 0 (more robust)
+   - Better handling of edge cases in feature engineering
+
+### 5. **Enhanced Evaluation Metrics**
+   - Added F1 micro score
+   - Added per-class F1 scores
+   - Added detailed per-class metrics DataFrame
+   - Added custom F1 evaluation function during training
+   - Better visualization of confusion matrix and metrics
+
+### Expected Improvements:
+- **F1 Weighted**: Should increase from ~0.74 to ~0.78-0.82
+- **F1 Macro**: Should increase from ~0.59 to ~0.65-0.72
+- **Per-class F1**: Should see significant improvements for minority classes (Class 1, Class 5)
+
+### Notes:
+- The model now uses class-weighted training which should help with imbalanced classes
+- Additional features provide more signal for the model to learn from
+- Optimized hyperparameters should lead to better generalization
 
 
+================================
 
 
+8::::::
 
-[I 2025-12-30 12:07:02,182] A new study created in memory with name: lgbm_optimization
-============================================================
-HYPERPARAMETER TUNING WITH OPTUNA
-============================================================
-⚠️  This will take 10-30 minutes depending on data size...
-   You can stop early with Ctrl+C if needed.
+# ------------- 15) Calculate class weights for imbalanced data -------------
+print("=" * 80)
+print("CALCULATING CLASS WEIGHTS FOR IMBALANCED DATA")
+print("=" * 80)
 
-[W 2025-12-30 12:07:16,500] Trial 0 failed with parameters: {'learning_rate': 0.06887290135247841, 'num_leaves': 148, 'min_data_in_leaf': 68, 'feature_fraction': 0.7412133957357806, 'subsample': 0.8461233153106296, 'lambda_l1': 0.1151771521124076, 'lambda_l2': 1.962415857891891e-08, 'max_depth': 14, 'min_gain_to_split': 0.020503631125684763, 'max_bin': 264} because of the following error: ValueError('The intermediate values are inconsistent with the objective valuesin terms of study directions. Please specify a metric to bemaximized for LightGBMPruningCallback.').
-Traceback (most recent call last):
-  File "/databricks/python/lib/python3.12/site-packages/optuna/study/_optimize.py", line 196, in _run_trial
-    value_or_values = func(trial)
-                      ^^^^^^^^^^^
-  File "/root/.ipykernel/1778/command-7985721800795380-818757185", line 62, in objective
-    model_tune = lgb.train(
-                 ^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 483, in safe_patch_function
-    patch_function(call_original, *args, **kwargs)
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 182, in patch_with_managed_run
-    result = patch_function(original, *args, **kwargs)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/lightgbm/__init__.py", line 883, in train
-    return train_impl(_log_models, _log_datasets, original, *args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/lightgbm/__init__.py", line 796, in train_impl
-    model = original(*args, **kwargs)
-            ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 474, in call_original
-    return call_original_fn_with_event_logging(_original_fn, og_args, og_kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 425, in call_original_fn_with_event_logging
-    original_fn_result = original_fn(*og_args, **og_kwargs)
-                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/mlflow/utils/autologging_utils/safety.py", line 471, in _original_fn
-    original_result = original(*_og_args, **_og_kwargs)
-                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/databricks/python/lib/python3.12/site-packages/lightgbm/engine.py", line 317, in train
-    cb(
-  File "/databricks/python/lib/python3.12/site-packages/optuna_integration/lightgbm.py", line 156, in __call__
-    raise ValueError(
-ValueError: The intermediate values are inconsistent with the objective valuesin terms of study directions. Please specify a metric to bemaximized for LightGBMPruningCallback.
-[W 2025-12-30 12:07:16,501] Trial 0 failed with value None.
+# Calculate class weights to handle imbalance
+unique_labels = sorted(train_pd["label0"].unique())
+class_weights = compute_class_weight(
+    'balanced',
+    classes=unique_labels,
+    y=train_pd["label0"]
+)
+class_weight_dict = dict(zip(unique_labels, class_weights))
+
+print("Class distribution in training set:")
+class_counts = train_pd["label0"].value_counts().sort_index()
+for label, count in class_counts.items():
+    weight = class_weight_dict[label]
+    print(f"  Class {label}: {count} samples (weight: {weight:.3f})")
+
+# Create sample weights for training
+train_sample_weights = train_pd["label0"].map(class_weight_dict).values
+val_sample_weights = val_pd["label0"].map(class_weight_dict).values
+
+# ------------- 16) LightGBM training with class weights -------------
+print("\n" + "=" * 80)
+print("TRAINING LIGHTGBM MODEL WITH CLASS WEIGHTS")
+print("=" * 80)
+
+feature_cols_final = model_feature_cols  # order as defined
+train_ds = lgb.Dataset(
+    train_pd[feature_cols_final], 
+    label=train_pd["label0"],
+    weight=train_sample_weights  # Add sample weights
+)
+val_ds = lgb.Dataset(
+    val_pd[feature_cols_final], 
+    label=val_pd["label0"], 
+    reference=train_ds,
+    weight=val_sample_weights
+)
+
+# Add custom evaluation metrics for F1 score
+def f1_eval(y_pred, y_true):
+    """
+    Custom F1 evaluation function for LightGBM
+    """
+    y_true = y_true.get_label()
+    y_pred = y_pred.reshape(len(np.unique(y_true)), -1).argmax(axis=0)
+    f1 = f1_score(y_true, y_pred, average='weighted')
+    return 'f1_weighted', f1, True
+
+model = lgb.train(
+    LGB_PARAMS,
+    train_ds,
+    valid_sets=[train_ds, val_ds],
+    valid_names=["train","val"],
+    num_boost_round=NUM_BOOST_ROUND,
+    callbacks=[
+        lgb.early_stopping(EARLY_STOP),
+        lgb.log_evaluation(period=100)  # Log every 100 iterations
+    ],
+    feval=f1_eval  # Add F1 evaluation
+)
+
+print("\n" + "=" * 80)
+print("MODEL TRAINING COMPLETE")
+print("=" * 80)
+
+# ------------- 17) Enhanced Evaluation -------------
+print("\n" + "=" * 80)
+print("EVALUATION METRICS")
+print("=" * 80)
+
+test_pred_prob = model.predict(test_pd[feature_cols_final])
+test_pred = np.argmax(test_pred_prob, axis=1)
+
+# Calculate metrics
+acc = accuracy_score(test_pd["label0"], test_pred)
+f1_weighted = f1_score(test_pd["label0"], test_pred, average="weighted")
+f1_macro = f1_score(test_pd["label0"], test_pred, average="macro")
+f1_micro = f1_score(test_pd["label0"], test_pred, average="micro")
+
+# Per-class F1 scores
+f1_per_class = f1_score(test_pd["label0"], test_pred, average=None)
+
+print(f"\n📊 Overall Metrics:")
+print(f"  Accuracy: {acc:.4f}")
+print(f"  F1 Weighted: {f1_weighted:.4f}")
+print(f"  F1 Macro: {f1_macro:.4f}")
+print(f"  F1 Micro: {f1_micro:.4f}")
+
+print(f"\n📈 Per-Class F1 Scores:")
+for i, f1_val in enumerate(f1_per_class):
+    class_name = id2prod.get(label_map.get(i, i), f"Class {i}")
+    print(f"  {class_name}: {f1_val:.4f}")
+
+print("\n📋 Detailed Classification Report:")
+print(classification_report(test_pd["label0"], test_pred, 
+                          target_names=[id2prod.get(label_map.get(i, i), f"Class {i}") 
+                                       for i in range(num_classes)]))
+
+cm = confusion_matrix(test_pd["label0"], test_pred)
+print(f"\n📊 Confusion Matrix Shape: {cm.shape}")
+print("\nConfusion Matrix:")
+print(cm)
+
+# Calculate additional metrics
+from sklearn.metrics import precision_recall_fscore_support
+precision, recall, fscore, support = precision_recall_fscore_support(
+    test_pd["label0"], test_pred, average=None
+)
+
+print("\n" + "=" * 80)
+print("PER-CLASS METRICS SUMMARY")
+print("=" * 80)
+metrics_df = pd.DataFrame({
+    'Class': [id2prod.get(label_map.get(i, i), f"Class {i}") for i in range(num_classes)],
+    'Precision': precision,
+    'Recall': recall,
+    'F1-Score': fscore,
+    'Support': support
+})
+display(metrics_df)
+
+print("\n✅ Evaluation Complete!")
+print("=" * 80)
+
