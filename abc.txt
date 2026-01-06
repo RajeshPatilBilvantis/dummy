@@ -1,32 +1,169 @@
-5th cell error:
-================================================================================
-FEATURE IMPORTANCE ANALYSIS
-================================================================================
-NameError: name 'model' is not defined
+6th:
+
+# ------------- 15) Calculate class weights for imbalanced data -------------
+print("=" * 80)
+print("CALCULATING CLASS WEIGHTS FOR IMBALANCED DATA")
+print("=" * 80)
+
+# Calculate class weights to handle imbalance
+unique_labels = sorted(train_pd["label0"].unique())
+# Convert to numpy array as required by compute_class_weight
+unique_labels_array = np.array(unique_labels)
+class_weights = compute_class_weight(
+    'balanced',
+    classes=unique_labels_array,
+    y=train_pd["label0"]
+)
+class_weight_dict = dict(zip(unique_labels, class_weights))
+
+print("Class distribution in training set:")
+class_counts = train_pd["label0"].value_counts().sort_index()
+for label, count in class_counts.items():
+    weight = class_weight_dict[label]
+    print(f"  Class {label}: {count} samples (weight: {weight:.3f})")
+
+# Create sample weights for training
+train_sample_weights = train_pd["label0"].map(class_weight_dict).values
+val_sample_weights = val_pd["label0"].map(class_weight_dict).values
+
+# ------------- 16) LightGBM training with class weights -------------
+print("\n" + "=" * 80)
+print("TRAINING LIGHTGBM MODEL WITH CLASS WEIGHTS")
+print("=" * 80)
+
+feature_cols_final = model_feature_cols  # order as defined
+train_ds = lgb.Dataset(
+    train_pd[feature_cols_final], 
+    label=train_pd["label0"],
+    weight=train_sample_weights  # Add sample weights
+)
+val_ds = lgb.Dataset(
+    val_pd[feature_cols_final], 
+    label=val_pd["label0"], 
+    reference=train_ds,
+    weight=val_sample_weights
+)
+
+# Add custom evaluation metrics for F1 score
+def f1_eval(y_pred, y_true):
+    """
+    Custom F1 evaluation function for LightGBM
+    """
+    y_true = y_true.get_label()
+    y_pred = y_pred.reshape(len(np.unique(y_true)), -1).argmax(axis=0)
+    f1 = f1_score(y_true, y_pred, average='weighted')
+    return 'f1_weighted', f1, True
+
+model = lgb.train(
+    LGB_PARAMS,
+    train_ds,
+    valid_sets=[train_ds, val_ds],
+    valid_names=["train","val"],
+    num_boost_round=NUM_BOOST_ROUND,
+    callbacks=[
+        lgb.early_stopping(EARLY_STOP),
+        lgb.log_evaluation(period=100)  # Log every 100 iterations
+    ],
+    feval=f1_eval  # Add F1 evaluation
+)
+
+print("\n" + "=" * 80)
+print("MODEL TRAINING COMPLETE")
+print("=" * 80)
+
+# ------------- 17) Enhanced Evaluation -------------
+print("\n" + "=" * 80)
+print("EVALUATION METRICS")
+print("=" * 80)
+
+test_pred_prob = model.predict(test_pd[feature_cols_final])
+test_pred = np.argmax(test_pred_prob, axis=1)
+
+# Calculate metrics
+acc = accuracy_score(test_pd["label0"], test_pred)
+f1_weighted = f1_score(test_pd["label0"], test_pred, average="weighted")
+f1_macro = f1_score(test_pd["label0"], test_pred, average="macro")
+f1_micro = f1_score(test_pd["label0"], test_pred, average="micro")
+
+# Per-class F1 scores
+f1_per_class = f1_score(test_pd["label0"], test_pred, average=None)
+
+print(f"\n📊 Overall Metrics:")
+print(f"  Accuracy: {acc:.4f}")
+print(f"  F1 Weighted: {f1_weighted:.4f}")
+print(f"  F1 Macro: {f1_macro:.4f}")
+print(f"  F1 Micro: {f1_micro:.4f}")
+
+print(f"\n📈 Per-Class F1 Scores:")
+for i, f1_val in enumerate(f1_per_class):
+    class_name = id2prod.get(label_map.get(i, i), f"Class {i}")
+    print(f"  {class_name}: {f1_val:.4f}")
+
+print("\n📋 Detailed Classification Report:")
+print(classification_report(test_pd["label0"], test_pred, 
+                          target_names=[id2prod.get(label_map.get(i, i), f"Class {i}") 
+                                       for i in range(num_classes)]))
+
+cm = confusion_matrix(test_pd["label0"], test_pred)
+print(f"\n📊 Confusion Matrix Shape: {cm.shape}")
+print("\nConfusion Matrix:")
+print(cm)
+
+# Calculate additional metrics
+from sklearn.metrics import precision_recall_fscore_support
+precision, recall, fscore, support = precision_recall_fscore_support(
+    test_pd["label0"], test_pred, average=None
+)
+
+print("\n" + "=" * 80)
+print("PER-CLASS METRICS SUMMARY")
+print("=" * 80)
+metrics_df = pd.DataFrame({
+    'Class': [id2prod.get(label_map.get(i, i), f"Class {i}") for i in range(num_classes)],
+    'Precision': precision,
+    'Recall': recall,
+    'F1-Score': fscore,
+    'Support': support
+})
+display(metrics_df)
+
+print("\n✅ Evaluation Complete!")
+print("=" * 80)
 
 
-6th cell error:
-================================================================================
-CALCULATING CLASS WEIGHTS FOR IMBALANCED DATA
-================================================================================
-InvalidParameterError: The 'classes' parameter of compute_class_weight must be an instance of 'numpy.ndarray'. Got [0, 1, 2, 3, 4, 5, 6] instead.
-File <command-3551822716294658>, line 8
-      6 # Calculate class weights to handle imbalance
-      7 unique_labels = sorted(train_pd["label0"].unique())
-----> 8 class_weights = compute_class_weight(
-      9     'balanced',
-     10     classes=unique_labels,
-     11     y=train_pd["label0"]
-     12 )
-     13 class_weight_dict = dict(zip(unique_labels, class_weights))
-     15 print("Class distribution in training set:")
-File /databricks/python/lib/python3.12/site-packages/sklearn/utils/_param_validation.py:95, in validate_parameter_constraints(parameter_constraints, params, caller_name)
-     89 else:
-     90     constraints_str = (
-     91         f"{', '.join([str(c) for c in constraints[:-1]])} or"
-     92         f" {constraints[-1]}"
-     93     )
----> 95 raise InvalidParameterError(
-     96     f"The {param_name!r} parameter of {caller_name} must be"
-     97     f" {constraints_str}. Got {param_val!r} instead."
-     98 )
+====================
+
+
+7th:
+# ============================================
+# FEATURE IMPORTANCE ANALYSIS (AFTER TRAINING)
+# ============================================
+
+print("=" * 80)
+print("FEATURE IMPORTANCE ANALYSIS")
+print("=" * 80)
+
+# Get feature importance from the model
+feature_importance = model.feature_importance(importance_type='gain')
+feature_importance_df = pd.DataFrame({
+    'feature': feature_cols_final,
+    'importance': feature_importance
+}).sort_values('importance', ascending=False)
+
+print("\n📊 Top 20 Most Important Features:")
+display(feature_importance_df.head(20))
+
+# Plot feature importance
+import matplotlib.pyplot as plt
+plt.figure(figsize=(12, 8))
+top_features = feature_importance_df.head(20)
+plt.barh(range(len(top_features)), top_features['importance'].values)
+plt.yticks(range(len(top_features)), top_features['feature'].values)
+plt.xlabel('Importance (Gain)')
+plt.title('Top 20 Feature Importance')
+plt.gca().invert_yaxis()
+plt.tight_layout()
+plt.show()
+
+print("\n✅ Feature importance analysis complete")
+print("=" * 80)
