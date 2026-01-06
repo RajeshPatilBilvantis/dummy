@@ -1,15 +1,32 @@
-5th error:
+5th cell error:
 ================================================================================
 FEATURE IMPORTANCE ANALYSIS
 ================================================================================
 NameError: name 'model' is not defined
 
 
-
-
-
-
-6th error:
+6th cell error:
 ================================================================================
 CALCULATING CLASS WEIGHTS FOR IMBALANCED DATA
 ================================================================================
+InvalidParameterError: The 'classes' parameter of compute_class_weight must be an instance of 'numpy.ndarray'. Got [0, 1, 2, 3, 4, 5, 6] instead.
+File <command-3551822716294658>, line 8
+      6 # Calculate class weights to handle imbalance
+      7 unique_labels = sorted(train_pd["label0"].unique())
+----> 8 class_weights = compute_class_weight(
+      9     'balanced',
+     10     classes=unique_labels,
+     11     y=train_pd["label0"]
+     12 )
+     13 class_weight_dict = dict(zip(unique_labels, class_weights))
+     15 print("Class distribution in training set:")
+File /databricks/python/lib/python3.12/site-packages/sklearn/utils/_param_validation.py:95, in validate_parameter_constraints(parameter_constraints, params, caller_name)
+     89 else:
+     90     constraints_str = (
+     91         f"{', '.join([str(c) for c in constraints[:-1]])} or"
+     92         f" {constraints[-1]}"
+     93     )
+---> 95 raise InvalidParameterError(
+     96     f"The {param_name!r} parameter of {caller_name} must be"
+     97     f" {constraints_str}. Got {param_val!r} instead."
+     98 )
