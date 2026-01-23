@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart List ML Pipeline</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .presentation-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: none;
+            padding: 60px;
+            background: white;
+            animation: slideIn 0.6s ease-out;
+        }
+
+        .slide.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(100px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes scaleIn {
+            from {
+                opacity: 0;
+                transform: scale(0.8);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .slide-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px 40px;
+            margin: -60px -60px 40px -60px;
+            border-radius: 0 0 20px 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .slide-title {
+            font-size: 42px;
+            font-weight: 700;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .slide-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 25px;
+        }
+
+        .content-item {
+            font-size: 24px;
+            padding: 20px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 12px;
+            border-left: 5px solid #667eea;
+            animation: fadeInUp 0.6s ease-out backwards;
+            transition: transform 0.3s ease;
+        }
+
+        .content-item:hover {
+            transform: translateX(10px);
+        }
+
+        .content-item:nth-child(1) { animation-delay: 0.1s; }
+        .content-item:nth-child(2) { animation-delay: 0.2s; }
+        .content-item:nth-child(3) { animation-delay: 0.3s; }
+        .content-item:nth-child(4) { animation-delay: 0.4s; }
+        .content-item:nth-child(5) { animation-delay: 0.5s; }
+        .content-item:nth-child(6) { animation-delay: 0.6s; }
+
+        .controls {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            display: flex;
+            gap: 15px;
+            z-index: 1000;
+        }
+
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .slide-counter {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            background: white;
+            padding: 15px 25px;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .thank-you-slide {
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .thank-you-slide .slide-title {
+            font-size: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: scaleIn 1s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="presentation-container">
+        <!-- Slide 1 -->
+        <div class="slide active">
+            <div class="slide-header">
+                <h1 class="slide-title">Smart List – Cross-sell ML Prediction Pipeline</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Objective</div>
+                <div class="content-item">Recommend the most likely next product category for clients with exactly single product</div>
+            </div>
+        </div>
+
+        <!-- Slide 2 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Highlights</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Data Extraction and Preparation</div>
+                <div class="content-item">Model Training</div>
+                <div class="content-item">Monthly Pipeline</div>
+                <div class="content-item">How it helps in cross-selling</div>
+            </div>
+        </div>
+
+        <!-- Slide 3 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Data Extraction and Preparation – What We Look At</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Product purchases the clients have made</div>
+                <div class="content-item">When they purchased each product</div>
+                <div class="content-item">Their financial profile</div>
+                <div class="content-item">Their relationship with us (how long, AUM)</div>
+                <div class="content-item">Their demographics</div>
+            </div>
+        </div>
+
+        <!-- Slide 4 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Data Source</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">dl_tenants_daas.us_wealth_manaement.wealth_management_client_metrics table</div>
+                <div class="content-item">Databricks</div>
+            </div>
+        </div>
+
+        <!-- Slide 5 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Organizing Client Information</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Categorizing Products: 7 product categories from prod_lob, sub_product_level_1 and sub_product_level_2</div>
+                <div class="content-item">Building Client Purchase History</div>
+                <div class="content-item">Example: Retirement → Life Insurance → Investments</div>
+                <div class="content-item">Focus on product transitions</div>
+                <div class="content-item">Only use complete, accurate information</div>
+                <div class="content-item">Focus on active clients</div>
+            </div>
+        </div>
+
+        <!-- Slide 6 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Model Training – How the Model Learns</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Looks at client patterns, sequences and profiles</div>
+                <div class="content-item">Patterns: Clients aged 50-65 with Retirement often need Life Insurance next</div>
+                <div class="content-item">Sequences: After Investments, clients frequently add Retirement planning</div>
+                <div class="content-item">Profiles: High-asset clients typically expand into Network Products</div>
+            </div>
+        </div>
+
+        <!-- Slide 7 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Model Training – Learning Process</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Identifies: When Client A was in this situation, what did they buy next?</div>
+                <div class="content-item">Finds common patterns across successful relationships</div>
+                <div class="content-item">Learns which factors matter most (age, products, assets, etc.)</div>
+                <div class="content-item">The trained model is deployed in Databricks</div>
+            </div>
+        </div>
+
+        <!-- Slide 8 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">What Information the Model Uses – Client Purchase History</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">What products they've bought before</div>
+                <div class="content-item">The order they bought them in</div>
+                <div class="content-item">How frequently they engage with different types of products</div>
+            </div>
+        </div>
+
+        <!-- Slide 9 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">What Information the Model Uses – Client Profile</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Age and life stage</div>
+                <div class="content-item">Total assets and account values</div>
+                <div class="content-item">Investment preferences (stocks, bonds, annuities)</div>
+                <div class="content-item">Client segment and relationship tier</div>
+            </div>
+        </div>
+
+        <!-- Slide 10 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Relationship Factors</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Preferred channel (advisor, direct, etc.)</div>
+            </div>
+        </div>
+
+        <!-- Slide 11 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">How the Model Makes Predictions</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Input: Client's complete profile and history</div>
+                <div class="content-item">Analysis: Finds patterns to that of similar clients</div>
+                <div class="content-item">Output: Recommends most likely next product with confidence score and talking points</div>
+                <div class="content-item">Why this works: Based on learned patterns and considers multiple factors simultaneously</div>
+            </div>
+        </div>
+
+        <!-- Slide 12 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Post-predictions</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Natural language talking points are generated based on the SHAP analysis for clients</div>
+                <div class="content-item">Client demographics are joined to the predictions table</div>
+            </div>
+        </div>
+
+        <!-- Slide 13 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Monthly Pipeline</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">On the 12th of every month clients with a single product and branchoffice_code 83 are filtered</div>
+                <div class="content-item">These records are passed through the trained ML model</div>
+                <div class="content-item">Predictions and SHAP-based talking points are generated</div>
+                <div class="content-item">Saved in eda_smartlist.us_wealth_management_smartlist.standalone_tp_predictions_single_policy</div>
+            </div>
+        </div>
+
+        <!-- Slide 14 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">How This Helps Us Cross-Sell</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Recommended Product: What they're most likely to need next based on patterns in the data</div>
+                <div class="content-item">Talking Points: What to say to the client</div>
+                <div class="content-item">Save Time: No manual analysis needed</div>
+                <div class="content-item">Increase Success Rate: Based on patterns</div>
+                <div class="content-item">Better Conversations: Data-backed reasons for suggestions</div>
+            </div>
+        </div>
+
+        <!-- Slide 15 -->
+        <div class="slide thank-you-slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Thank You</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">Thank you</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="slide-counter">
+        <span id="current-slide">1</span> / <span id="total-slides">15</span>
+    </div>
+
+    <div class="controls">
+        <button id="prev-btn" onclick="previousSlide()">← Previous</button>
+        <button id="next-btn" onclick="nextSlide()">Next →</button>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+
+        document.getElementById('total-slides').textContent = totalSlides;
+
+        function updateSlide() {
+            slides.forEach((slide, index) => {
+                slide.classList.remove('active');
+                if (index === currentSlide) {
+                    slide.classList.add('active');
+                }
+            });
+
+            document.getElementById('current-slide').textContent = currentSlide + 1;
+            document.getElementById('prev-btn').disabled = currentSlide === 0;
+            document.getElementById('next-btn').disabled = currentSlide === totalSlides - 1;
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides - 1) {
+                currentSlide++;
+                updateSlide();
+            }
+        }
+
+        function previousSlide() {
+            if (currentSlide > 0) {
+                currentSlide--;
+                updateSlide();
+            }
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                previousSlide();
+            }
+        });
+
+        updateSlide();
+    </script>
+</body>
+</html>
