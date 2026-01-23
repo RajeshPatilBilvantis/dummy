@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart List ML Pipeline</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .presentation-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: none;
+            padding: 60px;
+            background: white;
+            animation: slideIn 0.6s ease-out;
+        }
+
+        .slide.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(100px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes scaleIn {
+            from {
+                opacity: 0;
+                transform: scale(0.8);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .slide-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px 40px;
+            margin: -60px -60px 40px -60px;
+            border-radius: 0 0 20px 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .slide-title {
+            font-size: 42px;
+            font-weight: 700;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .slide-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 25px;
+        }
+
+        .content-item {
+            font-size: 24px;
+            padding: 20px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 12px;
+            border-left: 5px solid #667eea;
+            animation: fadeInUp 0.6s ease-out backwards;
+            transition: transform 0.3s ease;
+        }
+
+        .content-item:hover {
+            transform: translateX(10px);
+        }
+
+        .content-item:nth-child(1) { animation-delay: 0.1s; }
+        .content-item:nth-child(2) { animation-delay: 0.2s; }
+        .content-item:nth-child(3) { animation-delay: 0.3s; }
+        .content-item:nth-child(4) { animation-delay: 0.4s; }
+        .content-item:nth-child(5) { animation-delay: 0.5s; }
+        .content-item:nth-child(6) { animation-delay: 0.6s; }
+
+        .visual-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+
+        .icon-box {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            text-align: center;
+            min-width: 200px;
+            animation: scaleIn 0.6s ease-out backwards;
+        }
+
+        .icon-box:nth-child(1) { animation-delay: 0.2s; }
+        .icon-box:nth-child(2) { animation-delay: 0.4s; }
+        .icon-box:nth-child(3) { animation-delay: 0.6s; }
+        .icon-box:nth-child(4) { animation-delay: 0.8s; }
+
+        .icon {
+            font-size: 60px;
+            margin-bottom: 15px;
+        }
+
+        .controls {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            display: flex;
+            gap: 15px;
+            z-index: 1000;
+        }
+
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .slide-counter {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            background: white;
+            padding: 15px 25px;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .flow-diagram {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            margin: 20px 0;
+        }
+
+        .flow-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+            min-width: 150px;
+            animation: scaleIn 0.6s ease-out backwards;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.15);
+        }
+
+        .arrow {
+            font-size: 40px;
+            color: #667eea;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+        }
+
+        .highlight {
+            color: #667eea;
+            font-weight: 700;
+        }
+
+        .thank-you-slide {
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .thank-you-slide .slide-title {
+            font-size: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: scaleIn 1s ease-out;
+        }
+
+        .grid-2col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="presentation-container">
+        <!-- Slide 1 -->
+        <div class="slide active">
+            <div class="slide-header">
+                <h1 class="slide-title">Smart List – Cross-sell ML Prediction Pipeline</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">
+                    <strong class="highlight">Objective:</strong> Recommend the most likely next product category for clients with exactly one product
+                </div>
+                <div class="visual-container">
+                    <div class="icon-box">
+                        <div class="icon">👤</div>
+                        <div>Single Product Client</div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="icon-box">
+                        <div class="icon">🤖</div>
+                        <div>ML Prediction</div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="icon-box">
+                        <div class="icon">🎯</div>
+                        <div>Next Best Product</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 2 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Highlights</h1>
+            </div>
+            <div class="slide-content">
+                <div class="visual-container">
+                    <div class="icon-box">
+                        <div class="icon">📊</div>
+                        <h3>Data Extraction & Preparation</h3>
+                    </div>
+                    <div class="icon-box">
+                        <div class="icon">🧠</div>
+                        <h3>Model Training</h3>
+                    </div>
+                    <div class="icon-box">
+                        <div class="icon">🔄</div>
+                        <h3>Monthly Pipeline</h3>
+                    </div>
+                    <div class="icon-box">
+                        <div class="icon">💼</div>
+                        <h3>Cross-selling Benefits</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 3 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Data Extraction and Preparation – What We Look At</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">📦 Product purchases the clients have made</div>
+                <div class="content-item">📅 When they purchased each product</div>
+                <div class="content-item">💰 Their financial profile</div>
+                <div class="content-item">🤝 Their relationship with us (how long, AUM)</div>
+                <div class="content-item">👥 Their demographics</div>
+            </div>
+        </div>
+
+        <!-- Slide 4 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Data Source</h1>
+            </div>
+            <div class="slide-content">
+                <div class="visual-container">
+                    <div class="icon-box" style="min-width: 400px;">
+                        <div class="icon">💾</div>
+                        <h3>Databricks</h3>
+                        <p style="margin-top: 15px; font-size: 18px;">dl_tenants_daas.us_wealth_management.wealth_management_client_metrics</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 5 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Organizing Client Information</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">🏷️ Categorizing Products: 7 product categories from prod_lob, sub_product_level_1 and sub_product_level_2</div>
+                <div class="content-item">📚 Building Client Purchase History</div>
+                <div class="content-item">
+                    <strong>Example Sequence:</strong> Retirement → Life Insurance → Investments
+                </div>
+                <div class="content-item">🎯 Focus on product transitions</div>
+                <div class="content-item">✅ Only use complete, accurate information</div>
+                <div class="content-item">🟢 Focus on active clients</div>
+            </div>
+        </div>
+
+        <!-- Slide 6 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Model Training – How the Model Learns</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">
+                    <strong class="highlight">Patterns:</strong> Clients aged 50-65 with Retirement often need Life Insurance next
+                </div>
+                <div class="content-item">
+                    <strong class="highlight">Sequences:</strong> After Investments, clients frequently add Retirement planning
+                </div>
+                <div class="content-item">
+                    <strong class="highlight">Profiles:</strong> High-asset clients typically expand into Network Products
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 7 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Model Training – Learning Process</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-diagram">
+                    <div class="flow-box">Identify Patterns</div>
+                    <div class="arrow">→</div>
+                    <div class="flow-box">Find Commonalities</div>
+                    <div class="arrow">→</div>
+                    <div class="flow-box">Learn Key Factors</div>
+                    <div class="arrow">→</div>
+                    <div class="flow-box">Deploy to Databricks</div>
+                </div>
+                <div class="content-item">🔍 When Client A was in this situation, what did they buy next?</div>
+                <div class="content-item">🤝 Finds common patterns across successful relationships</div>
+                <div class="content-item">⚖️ Learns which factors matter most (age, products, assets, etc.)</div>
+            </div>
+        </div>
+
+        <!-- Slide 8 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">What Information the Model Uses – Purchase History</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">🛒 What products they've bought before</div>
+                <div class="content-item">📈 The order they bought them in</div>
+                <div class="content-item">🔁 How frequently they engage with different types of products</div>
+            </div>
+        </div>
+
+        <!-- Slide 9 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">What Information the Model Uses – Client Profile</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">👤 Age and life stage</div>
+                <div class="content-item">💎 Total assets and account values</div>
+                <div class="content-item">📊 Investment preferences (stocks, bonds, annuities)</div>
+                <div class="content-item">⭐ Client segment and relationship tier</div>
+            </div>
+        </div>
+
+        <!-- Slide 10 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Relationship Factors</h1>
+            </div>
+            <div class="slide-content">
+                <div class="visual-container">
+                    <div class="icon-box" style="min-width: 400px;">
+                        <div class="icon">📞</div>
+                        <h3>Preferred Channel</h3>
+                        <p style="margin-top: 15px; font-size: 20px;">Advisor • Direct • Online</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 11 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">How the Model Makes Predictions</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-diagram" style="margin-bottom: 30px;">
+                    <div class="flow-box">Input<br>Client Profile</div>
+                    <div class="arrow">→</div>
+                    <div class="flow-box">Analysis<br>Pattern Matching</div>
+                    <div class="arrow">→</div>
+                    <div class="flow-box">Output<br>Recommendation</div>
+                </div>
+                <div class="content-item">✅ <strong>Why this works:</strong> Based on learned patterns and considers multiple factors simultaneously</div>
+                <div class="content-item">🎯 Provides confidence score and talking points</div>
+            </div>
+        </div>
+
+        <!-- Slide 12 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Post-predictions</h1>
+            </div>
+            <div class="slide-content">
+                <div class="visual-container">
+                    <div class="icon-box" style="min-width: 350px;">
+                        <div class="icon">💬</div>
+                        <h3>Natural Language Talking Points</h3>
+                        <p style="margin-top: 15px;">Generated based on SHAP analysis</p>
+                    </div>
+                    <div class="icon-box" style="min-width: 350px;">
+                        <div class="icon">👥</div>
+                        <h3>Client Demographics</h3>
+                        <p style="margin-top: 15px;">Joined to predictions table</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 13 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Monthly Pipeline</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">📅 On the 12th of every month: Filter clients with single product and branch office code 83</div>
+                <div class="content-item">🔄 Records passed through the trained ML model</div>
+                <div class="content-item">🎯 Predictions and SHAP-based talking points are generated</div>
+                <div class="content-item">💾 <strong>Saved in:</strong> eda_smartlist.us_wealth_management_smartlist.standalone_tp_predictions_single_policy</div>
+            </div>
+        </div>
+
+        <!-- Slide 14 -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">How This Helps Us Cross-Sell</h1>
+            </div>
+            <div class="slide-content">
+                <div class="content-item">🎯 <strong>Recommended Product:</strong> What they're most likely to need next based on patterns</div>
+                <div class="content-item">💬 <strong>Talking Points:</strong> What to say to the client</div>
+                <div class="content-item">⏱️ <strong>Save Time:</strong> No manual analysis needed</div>
+                <div class="content-item">📈 <strong>Increase Success Rate:</strong> Based on proven patterns</div>
+                <div class="content-item">🗣️ <strong>Better Conversations:</strong> Data-backed reasons for suggestions</div>
+            </div>
+        </div>
+
+        <!-- Slide 15 -->
+        <div class="slide thank-you-slide">
+            <h1 class="slide-title">Thank You</h1>
+        </div>
+    </div>
+
+    <div class="slide-counter">
+        <span id="current-slide">1</span> / <span id="total-slides">15</span>
+    </div>
+
+    <div class="controls">
+        <button id="prev-btn" onclick="previousSlide()">← Previous</button>
+        <button id="next-btn" onclick="nextSlide()">Next →</button>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+
+        document.getElementById('total-slides').textContent = totalSlides;
+
+        function updateSlide() {
+            slides.forEach((slide, index) => {
+                slide.classList.remove('active');
+                if (index === currentSlide) {
+                    slide.classList.add('active');
+                }
+            });
+
+            document.getElementById('current-slide').textContent = currentSlide + 1;
+            document.getElementById('prev-btn').disabled = currentSlide === 0;
+            document.getElementById('next-btn').disabled = currentSlide === totalSlides - 1;
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides - 1) {
+                currentSlide++;
+                updateSlide();
+            }
+        }
+
+        function previousSlide() {
+            if (currentSlide > 0) {
+                currentSlide--;
+                updateSlide();
+            }
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                previousSlide();
+            }
+        });
+
+        updateSlide();
+    </script>
+</body>
+</html>
