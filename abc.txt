@@ -1,4 +1,5 @@
-take a business_month, say, 202509.
+take a business_month, say, 202509 from dl_tenants_daas.us_wealth_management.wealth_management_client_metrics. 
 take all the axa_party_id who has a single policy (policy_no is an indicator of a policy and axa_party_id is the unique client identifier).
-compare these axa_party_id with the same ones in business_month 202510 and filter the axa_party_id from 202510 who has more than 1 policy when compared.
-then, we take these axa_party_id and pass them through our model for validation. if the prediction and the above compared clients' second policy is same, we can say that our model is performing well.
+compare these axa_party_id with the same ones in business_month 202510 and filter the records from 202510 who has more than 1 policy for these axa_party_id.
+then, we take these axa_party_id and pass them through our model(model which isin current code) for validation. if the prediction and the above compared clients' second policy is same, we can say that our model is performing well.
+also write up what you did at last
