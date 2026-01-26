@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart List ML Pipeline</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .presentation-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: none;
+            padding: 60px;
+            background: white;
+            animation: slideIn 0.6s ease-out;
+            overflow-y: auto;
+        }
+
+        .slide.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(100px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes scaleIn {
+            from {
+                opacity: 0;
+                transform: scale(0.8);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        @keyframes pulse {
+            0%, 100% { 
+                transform: scale(1);
+                opacity: 0.7;
+            }
+            50% { 
+                transform: scale(1.2);
+                opacity: 1;
+            }
+        }
+
+        .slide-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px 40px;
+            margin: -60px -60px 30px -60px;
+            border-radius: 0 0 20px 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .slide-title {
+            font-size: 38px;
+            font-weight: 700;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .slide-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 20px;
+        }
+
+        .flow-row {
+            display: flex;
+            align-items: stretch;
+            gap: 12px;
+            margin-bottom: 15px;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            padding: 10px 0;
+        }
+
+        .flow-box {
+            flex: 1;
+            min-width: 180px;
+            background: white;
+            border-radius: 12px;
+            padding: 20px 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            border: 2px solid #667eea;
+            transition: all 0.3s ease;
+            animation: scaleIn 0.6s ease-out backwards;
+        }
+
+        .flow-box:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 12px 35px rgba(102, 126, 234, 0.3);
+        }
+
+        .flow-box.highlight-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+        }
+
+        .flow-box.data-source {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+        }
+
+        .box-icon {
+            font-size: 32px;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+
+        .box-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            text-align: center;
+        }
+
+        .box-content {
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .box-content ul {
+            margin-top: 6px;
+            padding-left: 18px;
+        }
+
+        .box-content li {
+            margin-bottom: 4px;
+        }
+
+        .arrow-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 40px;
+        }
+
+        .arrow {
+            font-size: 36px;
+            color: #667eea;
+            animation: pulse 2s infinite;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .info-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 15px;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+            animation: fadeInUp 0.6s ease-out backwards;
+        }
+
+        .info-card-title {
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 6px;
+            font-size: 15px;
+        }
+
+        .info-card-content {
+            font-size: 13px;
+            color: #555;
+            line-height: 1.5;
+        }
+
+        .controls {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            display: flex;
+            gap: 15px;
+            z-index: 1000;
+        }
+
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .slide-counter {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            background: white;
+            padding: 15px 25px;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+
+        .objective-banner {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 12px;
+            text-align: center;
+            font-size: 18px;
+            font-weight: 600;
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+            animation: scaleIn 0.8s ease-out;
+        }
+
+        .visual-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 25px;
+            flex-wrap: wrap;
+        }
+
+        .icon-box {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            text-align: center;
+            min-width: 180px;
+            animation: scaleIn 0.6s ease-out backwards;
+            border: 2px solid #667eea;
+        }
+
+        .icon {
+            font-size: 50px;
+            margin-bottom: 12px;
+        }
+
+        .flow-box:nth-child(1) { animation-delay: 0.1s; }
+        .flow-box:nth-child(3) { animation-delay: 0.2s; }
+        .flow-box:nth-child(5) { animation-delay: 0.3s; }
+        .flow-box:nth-child(7) { animation-delay: 0.4s; }
+        .flow-box:nth-child(9) { animation-delay: 0.5s; }
+
+        .info-card:nth-child(1) { animation-delay: 0.2s; }
+        .info-card:nth-child(2) { animation-delay: 0.3s; }
+        .info-card:nth-child(3) { animation-delay: 0.4s; }
+        .info-card:nth-child(4) { animation-delay: 0.5s; }
+
+        .icon-box:nth-child(1) { animation-delay: 0.2s; }
+        .icon-box:nth-child(2) { animation-delay: 0.4s; }
+        .icon-box:nth-child(3) { animation-delay: 0.6s; }
+
+        .detail-box {
+            margin-top: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            border: 2px solid #667eea;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .detail-title {
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .detail-item strong {
+            color: #667eea;
+        }
+
+        .detail-item ul {
+            margin-top: 5px;
+            font-size: 13px;
+            color: #555;
+            padding-left: 20px;
+        }
+
+        .benefit-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .benefit-card {
+            background: rgba(255,255,255,0.15);
+            padding: 15px;
+            border-radius: 8px;
+            animation: scaleIn 0.6s ease-out backwards;
+        }
+
+        .benefit-card:nth-child(1) { animation-delay: 0.2s; }
+        .benefit-card:nth-child(2) { animation-delay: 0.3s; }
+        .benefit-card:nth-child(3) { animation-delay: 0.4s; }
+        .benefit-card:nth-child(4) { animation-delay: 0.5s; }
+
+        .benefit-title {
+            font-weight: 700;
+            margin-bottom: 5px;
+            font-size: 15px;
+        }
+
+        .benefit-text {
+            font-size: 13px;
+        }
+
+        .thank-you-slide {
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .thank-you-slide .slide-title {
+            font-size: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: scaleIn 1s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="presentation-container">
+        <!-- Slide 1: Initial Title Page -->
+        <div class="slide active">
+            <div class="slide-content" style="justify-content: center; align-items: center; text-align: center;">
+                <h1 style="font-size: 72px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 30px; animation: scaleIn 1s ease-out;">
+                    Smart List
+                </h1>
+                <h2 style="font-size: 48px; color: #667eea; margin-bottom: 50px; animation: fadeInUp 1.2s ease-out;">
+                    Cross-sell ML Prediction Pipeline
+                </h2>
+                
+                <div style="max-width: 800px; margin: 0 auto;">
+                    <div style="background: linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%); padding: 30px; border-radius: 15px; border-left: 6px solid #667eea; animation: fadeInUp 1.4s ease-out;">
+                        <h3 style="font-size: 28px; color: #667eea; margin-bottom: 20px;">Pipeline Overview</h3>
+                        <div class="info-grid" style="text-align: left;">
+                            <div class="info-card">
+                                <div class="info-card-title">📊 Data Extraction & Preparation</div>
+                                <div class="info-card-content">From raw data to structured client purchase sequences</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-title">🧠 Model Training</div>
+                                <div class="info-card-content">Learning patterns and behaviors from historical data</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-title">🔄 Monthly Run Pipeline</div>
+                                <div class="info-card-content">Automated predictions for single-product clients</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-title">💼 Cross-sell Output</div>
+                                <div class="info-card-content">Actionable recommendations with talking points</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 2: Objective -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Smart List – Cross-sell ML Prediction Pipeline</h1>
+            </div>
+            <div class="slide-content">
+                <div class="objective-banner">
+                    <strong>Objective:</strong> Recommend the most likely next product category for clients with exactly one product
+                </div>
+                <div class="visual-container">
+                    <div class="icon-box">
+                        <div class="icon">👤</div>
+                        <div>Single Product Client</div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="icon-box">
+                        <div class="icon">🤖</div>
+                        <div>ML Prediction</div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="icon-box">
+                        <div class="icon">🎯</div>
+                        <div>Next Best Product</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 3: Data Extraction & Preparation Flow -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">📊 Data Extraction & Preparation</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box data-source">
+                        <div class="box-icon">💾</div>
+                        <div class="box-title">Data Source</div>
+                        <div class="box-content">
+                            <strong>Databricks:</strong><br>
+                            dl_tenants_daas.us_wealth_management.wealth_management_client_metrics
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">📦</div>
+                        <div class="box-title">Extract Data</div>
+                        <div class="box-content">
+                            <ul>
+                                <li>Product purchases</li>
+                                <li>Purchase dates</li>
+                                <li>Financial profile</li>
+                                <li>Demographics</li>
+                                <li>Relationship (AUM)</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">🏷️</div>
+                        <div class="box-title">Categorize</div>
+                        <div class="box-content">
+                            <strong>7 Categories:</strong>
+                            <ul>
+                                <li>prod_lob</li>
+                                <li>sub_product_level_1</li>
+                                <li>sub_product_level_2</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">📚</div>
+                        <div class="box-title">Build History</div>
+                        <div class="box-content">
+                            <strong>Example:</strong><br>
+                            Retirement → Life Insurance → Investments
+                            <br><br>
+                            <ul>
+                                <li>Product transitions</li>
+                                <li>Active clients</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="info-grid">
+                    <div class="info-card">
+                        <div class="info-card-title">💰 Financial Profile</div>
+                        <div class="info-card-content">Total assets, account values, investment preferences (stocks, bonds, annuities)</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">👥 Demographics</div>
+                        <div class="info-card-content">Age, life stage, client segment, relationship tier</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">🤝 Relationship Factors</div>
+                        <div class="info-card-content">Relationship length, preferred channel (Advisor, Direct, Online)</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 4: Model Training Flow -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">🧠 Model Training</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🔍</div>
+                        <div class="box-title">Identify Patterns</div>
+                        <div class="box-content">
+                            When Client A was in this situation, what did they buy next?
+                            <br><br>
+                            Analyze historical sequences
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🤝</div>
+                        <div class="box-title">Find Commonalities</div>
+                        <div class="box-content">
+                            Discover patterns across successful relationships
+                            <br><br>
+                            Group similar behaviors
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">⚖️</div>
+                        <div class="box-title">Learn Key Factors</div>
+                        <div class="box-content">
+                            Which factors matter most:
+                            <ul>
+                                <li>Age & life stage</li>
+                                <li>Current products</li>
+                                <li>Asset levels</li>
+                                <li>Purchase order</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box data-source">
+                        <div class="box-icon">🚀</div>
+                        <div class="box-title">Deploy Model</div>
+                        <div class="box-content">
+                            Deploy to Databricks
+                            <br><br>
+                            Ready for predictions
+                        </div>
+                    </div>
+                </div>
+
+                <div class="info-grid">
+                    <div class="info-card">
+                        <div class="info-card-title">📈 Pattern Example</div>
+                        <div class="info-card-content">Clients aged 50-65 with Retirement accounts often need Life Insurance next</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">🔄 Sequence Example</div>
+                        <div class="info-card-content">After Investments, clients frequently add Retirement planning products</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">💎 Profile Example</div>
+                        <div class="info-card-content">High-asset clients typically expand into Network Products</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 5: Model Inputs Detail -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">What Information the Model Uses</h1>
+            </div>
+            <div class="slide-content">
+                <div class="detail-box">
+                    <div class="detail-title">Model Inputs:</div>
+                    <div class="detail-grid">
+                        <div class="detail-item">
+                            <strong>📜 Purchase History:</strong>
+                            <ul>
+                                <li>What products they've bought before</li>
+                                <li>The order they bought them in</li>
+                                <li>How frequently they engage with different types of products</li>
+                            </ul>
+                        </div>
+                        <div class="detail-item">
+                            <strong>👤 Client Profile:</strong>
+                            <ul>
+                                <li>Age and life stage</li>
+                                <li>Total assets and account values</li>
+                                <li>Investment preferences (stocks, bonds, annuities)</li>
+                                <li>Client segment and relationship tier</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="visual-container" style="margin-top: 30px;">
+                    <div class="icon-box" style="min-width: 350px;">
+                        <div class="icon">📞</div>
+                        <h3>Preferred Channel</h3>
+                        <p style="margin-top: 10px; font-size: 18px;">Advisor • Direct • Online</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 6: Monthly Pipeline Flow -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">🔄 Monthly Run Pipeline</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box">
+                        <div class="box-icon">📅</div>
+                        <div class="box-title">Schedule</div>
+                        <div class="box-content">
+                            <strong>12th of Every Month</strong>
+                            <br><br>
+                            Automated execution
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">🔍</div>
+                        <div class="box-title">Filter Clients</div>
+                        <div class="box-content">
+                            <strong>Criteria:</strong>
+                            <ul>
+                                <li>Exactly 1 product</li>
+                                <li>Branch code 83</li>
+                                <li>Active status</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🤖</div>
+                        <div class="box-title">Run ML Model</div>
+                        <div class="box-content">
+                            Process records through trained model
+                            <br><br>
+                            Generate predictions
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">💬</div>
+                        <div class="box-title">Talking Points</div>
+                        <div class="box-content">
+                            <strong>SHAP-based</strong>
+                            <br><br>
+                            Natural language explanations
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box data-source">
+                        <div class="box-icon">💾</div>
+                        <div class="box-title">Save Results</div>
+                        <div class="box-content">
+                            <strong>Output:</strong><br>
+                            eda_smartlist...standalone_tp_predictions_single_policy
+                        </div>
+                    </div>
+                </div>
+
+                <div class="info-grid">
+                    <div class="info-card">
+                        <div class="info-card-title">⚡ Pipeline Automation</div>
+                        <div class="info-card-content">Fully automated monthly process - no manual intervention required</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">🎯 Target Audience</div>
+                        <div class="info-card-content">Single-product clients represent highest cross-sell opportunity</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">📊 Output Format</div>
+                        <div class="info-card-content">Predictions with confidence scores, recommended products, and talking points</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 7: Cross-sell Output Flow -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">💼 Cross-sell Output & Usage</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">📋</div>
+                        <div class="box-title">Prediction Results</div>
+                        <div class="box-content">
+                            <ul>
+                                <li>Client ID</li>
+                                <li>Current product</li>
+                                <li>Recommended product</li>
+                                <li>Confidence score</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">💬</div>
+                        <div class="box-title">Talking Points</div>
+                        <div class="box-content">
+                            Natural language explanations
+                            <br><br>
+                            "Based on similar clients in your age group..."
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">👥</div>
+                        <div class="box-title">Demographics</div>
+                        <div class="box-content">
+                            Joined to predictions:
+                            <ul>
+                                <li>Contact info</li>
+                                <li>Advisor assignment</li>
+                                <li>Preferred channel</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box data-source">
+                        <div class="box-icon">📞</div>
+                        <div class="box-title">Advisor Action</div>
+                        <div class="box-content">
+                            <ul>
+                                <li>Targeted outreach</li>
+                                <li>Personalized conversations</li>
+                                <li>Data-backed recommendations</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; padding: 25px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px;">
+                    <div style="font-size: 20px; font-weight: 700; margin-bottom: 15px;">✨ Business Benefits</div>
+                    <div class="benefit-grid">
+                        <div class="benefit-card">
+                            <div class="benefit-title">🎯 Targeted</div>
+                            <div class="benefit-text">Most likely next product based on proven patterns</div>
+                        </div>
+                        <div class="benefit-card">
+                            <div class="benefit-title">⏱️ Time Savings</div>
+                            <div class="benefit-text">No manual analysis needed</div>
+                        </div>
+                        <div class="benefit-card">
+                            <div class="benefit-title">📈 Higher Success</div>
+                            <div class="benefit-text">Based on historical patterns</div>
+                        </div>
+                        <div class="benefit-card">
+                            <div class="benefit-title">🗣️ Better Conversations</div>
+                            <div class="benefit-text">Data-backed talking points</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 8: Thank You -->
+        <div class="slide thank-you-slide">
+            <h1 class="slide-title">Thank You</h1>
+        </div>
+    </div>
+
+    <div class="slide-counter">
+        <span id="current-slide">1</span> / <span id="total-slides">8</span>
+    </div>
+
+    <div class="controls">
+        <button id="prev-btn" onclick="previousSlide()">← Previous</button>
+        <button id="next-btn" onclick="nextSlide()">Next →</button>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+
+        document.getElementById('total-slides').textContent = totalSlides;
+
+        function updateSlide() {
+            slides.forEach((slide, index) => {
+                slide.classList.remove('active');
+                if (index === currentSlide) {
+                    slide.classList.add('active');
+                }
+            });
+
+            document.getElementById('current-slide').textContent = currentSlide + 1;
+            document.getElementById('prev-btn').disabled = currentSlide === 0;
+            document.getElementById('next-btn').disabled = currentSlide === totalSlides - 1;
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides - 1) {
+                currentSlide++;
+                updateSlide();
+            }
+        }
+
+        function previousSlide() {
+            if (currentSlide > 0) {
+                currentSlide--;
+                updateSlide();
+            }
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                previousSlide();
+            }
+        });
+
+        updateSlide();
+    </script>
+</body>
+</html>
