@@ -1,0 +1,1687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart List ML Pipeline</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .presentation-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            display: none;
+            padding: 50px;
+            background: white;
+            animation: slideIn 0.6s ease-out;
+            overflow-y: auto;
+        }
+
+        .slide.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(100px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes scaleIn {
+            from {
+                opacity: 0;
+                transform: scale(0.8);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        @keyframes pulse {
+            0%, 100% { 
+                transform: scale(1);
+                opacity: 0.7;
+            }
+            50% { 
+                transform: scale(1.2);
+                opacity: 1;
+            }
+        }
+
+        .slide-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 35px;
+            margin: -50px -50px 25px -50px;
+            border-radius: 0 0 20px 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        .slide-title {
+            font-size: 34px;
+            font-weight: 700;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .slide-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            padding-bottom: 80px;
+        }
+
+        .flow-row {
+            display: flex;
+            align-items: stretch;
+            gap: 10px;
+            margin-bottom: 12px;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+            padding: 8px 0;
+        }
+
+        .flow-box {
+            flex: 1;
+            min-width: 160px;
+            background: white;
+            border-radius: 10px;
+            padding: 16px 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            border: 2px solid #667eea;
+            transition: all 0.3s ease;
+            animation: scaleIn 0.6s ease-out backwards;
+        }
+
+        .flow-box:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+        }
+
+        .flow-box.highlight-box {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+        }
+
+        .flow-box.data-source {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+        }
+
+        .flow-box.success-box {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            border: none;
+        }
+
+        .box-icon {
+            font-size: 28px;
+            margin-bottom: 8px;
+            text-align: center;
+        }
+
+        .box-title {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            text-align: center;
+        }
+
+        .box-content {
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        .box-content ul {
+            margin-top: 5px;
+            padding-left: 15px;
+        }
+
+        .box-content li {
+            margin-bottom: 3px;
+        }
+
+        .arrow-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 35px;
+        }
+
+        .arrow {
+            font-size: 32px;
+            color: #667eea;
+            animation: pulse 2s infinite;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .info-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 12px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            box-shadow: 0 3px 12px rgba(0,0,0,0.08);
+            animation: fadeInUp 0.6s ease-out backwards;
+        }
+
+        .info-card-title {
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 5px;
+            font-size: 13px;
+        }
+
+        .info-card-content {
+            font-size: 11px;
+            color: #555;
+            line-height: 1.4;
+        }
+
+        .controls {
+            position: fixed;
+            bottom: 25px;
+            right: 25px;
+            display: flex;
+            gap: 12px;
+            z-index: 1000;
+        }
+
+        button {
+            padding: 12px 25px;
+            font-size: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .slide-counter {
+            position: fixed;
+            bottom: 25px;
+            left: 25px;
+            background: white;
+            padding: 12px 20px;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+
+        .objective-banner {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 18px 25px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 16px;
+            font-weight: 600;
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.3);
+            animation: scaleIn 0.8s ease-out;
+        }
+
+        .visual-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .icon-box {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            text-align: center;
+            min-width: 160px;
+            animation: scaleIn 0.6s ease-out backwards;
+            border: 2px solid #667eea;
+        }
+
+        .icon {
+            font-size: 45px;
+            margin-bottom: 10px;
+        }
+
+        .flow-box:nth-child(1) { animation-delay: 0.1s; }
+        .flow-box:nth-child(3) { animation-delay: 0.2s; }
+        .flow-box:nth-child(5) { animation-delay: 0.3s; }
+        .flow-box:nth-child(7) { animation-delay: 0.4s; }
+        .flow-box:nth-child(9) { animation-delay: 0.5s; }
+        .flow-box:nth-child(11) { animation-delay: 0.6s; }
+
+        .info-card:nth-child(1) { animation-delay: 0.2s; }
+        .info-card:nth-child(2) { animation-delay: 0.3s; }
+        .info-card:nth-child(3) { animation-delay: 0.4s; }
+        .info-card:nth-child(4) { animation-delay: 0.5s; }
+
+        .icon-box:nth-child(1) { animation-delay: 0.2s; }
+        .icon-box:nth-child(2) { animation-delay: 0.4s; }
+        .icon-box:nth-child(3) { animation-delay: 0.6s; }
+
+        .stats-banner {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 15px 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            animation: scaleIn 0.8s ease-out;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 10px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 8px;
+        }
+
+        .stat-number {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            opacity: 0.95;
+        }
+
+        .detail-box {
+            margin-top: 12px;
+            padding: 15px;
+            background: white;
+            border-radius: 10px;
+            border: 2px solid #667eea;
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        .detail-title {
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .thank-you-slide {
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+
+        .thank-you-slide .slide-title {
+            font-size: 72px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: scaleIn 1s ease-out;
+        }
+
+        .section-divider {
+            margin: 15px 0;
+            padding: 12px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .section-subtitle {
+            font-size: 15px;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="presentation-container">
+        <!-- Slide 1: Initial Title Page -->
+        <div class="slide active">
+            <div class="slide-content" style="justify-content: center; align-items: center; text-align: center;">
+                <h1 style="font-size: 64px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 25px; animation: scaleIn 1s ease-out;">
+                    Smart List
+                </h1>
+                <h2 style="font-size: 42px; color: #667eea; margin-bottom: 40px; animation: fadeInUp 1.2s ease-out;">
+                    Cross-sell ML Prediction Pipeline
+                </h2>
+                
+                <div style="max-width: 900px; margin: 0 auto;">
+                    <div style="background: linear-gradient(135deg, #f5f7fa 0%, #e9ecef 100%); padding: 25px; border-radius: 15px; border-left: 6px solid #667eea; animation: fadeInUp 1.4s ease-out;">
+                        <h3 style="font-size: 24px; color: #667eea; margin-bottom: 18px;">Overview</h3>
+                        <div class="info-grid" style="text-align: left;">
+                            <div class="info-card">
+                                <div class="info-card-title">📊 Data Extraction & Preparation</div>
+                                <div class="info-card-content">From raw data to structured client purchase sequences</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-title">🧠 Model Training</div>
+                                <div class="info-card-content">Learning patterns and behaviors from historical data</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-title">🔄 Monthly Run Pipeline</div>
+                                <div class="info-card-content">Automated predictions for single-product clients</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-title">💼 Cross-sell Output</div>
+                                <div class="info-card-content">Actionable recommendations with talking points</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 2: Objective & Business Impact
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">Smart List – Objective & Business Impact</h1>
+            </div>
+            <div class="slide-content" style="justify-content: center;">
+                <div class="objective-banner">
+                    <strong>Objective:</strong> Recommend the most likely next product category for clients with exactly one product
+                </div>
+                
+                <div class="stats-banner">
+                    <div class="stat-item">
+                        <div class="stat-number">85%</div>
+                        <div class="stat-label">Model Accuracy</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">1,500-2,000</div>
+                        <div class="stat-label">Clients Identified Monthly</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">≥95%</div>
+                        <div class="stat-label">Confidence Threshold</div>
+                    </div>
+                </div>
+
+                <div class="visual-container" style="margin-top: 25px;">
+                    <div class="icon-box">
+                        <div class="icon">👤</div>
+                        <div>Single Product Client</div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="icon-box">
+                        <div class="icon">🤖</div>
+                        <div>ML Prediction Engine</div>
+                    </div>
+                    <div class="arrow">→</div>
+                    <div class="icon-box">
+                        <div class="icon">🎯</div>
+                        <div>Next Best Product</div>
+                    </div>
+                </div>
+            </div>
+        </div> -->
+
+<!-- Slide 3: Data Extraction - Source & Filtering -->
+<div class="slide">
+    <div class="slide-header">
+        <h1 class="slide-title">📊 Data Extraction from Source</h1>
+    </div>
+
+    <div class="slide-content">
+
+        <!-- FLOW -->
+        <div class="flow-row">
+
+            <div class="flow-box data-source">
+                <div class="box-icon">🏦</div>
+                <div class="box-title">Raw Client Data</div>
+                <div class="box-content">
+                    We begin with raw client data pulled from the company data platform.
+                    <br><br>
+                    <strong>Includes:</strong>
+                    <ul>
+                        <li>Client identifiers</li>
+                        <li>Products owned</li>
+                        <li>Financial values</li>
+                        <li>Purchase dates</li>
+                    </ul>
+                    <strong>Scale:</strong> 48+ million records
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box">
+                <div class="box-icon">🧹</div>
+                <div class="box-title">Clean & Standardize</div>
+                <div class="box-content">
+                    Raw data is inconsistent and difficult to use directly.
+                    <br><br>
+                    We standardize it by:
+                    <ul>
+                        <li>Merging multiple product fields</li>
+                        <li>Mapping them into <strong>7 clear product categories</strong></li>
+                        <li>Ensuring one product label per record</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box">
+                <div class="box-icon">🔍</div>
+                <div class="box-title">Quality Checks</div>
+                <div class="box-content">
+                    We remove unreliable data to avoid misleading results.
+                    <br><br>
+                    Only keep records where:
+                    <ul>
+                        <li>Client ID is present</li>
+                        <li>Purchase date is available</li>
+                        <li>Product category is valid</li>
+                        <li>Policy status is <strong>Active</strong></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box success-box">
+                <div class="box-icon">⚡</div>
+                <div class="box-title">Smart Sampling</div>
+                <div class="box-content">
+                    Processing the full dataset is unnecessary and expensive.
+                    <br><br>
+                    To stay efficient:
+                    <ul>
+                        <li>A <strong>random 20%</strong> sample is selected</li>
+                        <li>Patterns remain statistically representative</li>
+                    </ul>
+                    <strong>Result:</strong> ~49 million clean purchase events
+                </div>
+            </div>
+
+        </div>
+
+        <!-- OUTCOME -->
+        <div class="detail-box">
+            <div class="detail-title">✔ Outcome of Step 1</div>
+            <div style="font-size:12px; line-height:1.6; color:#555;">
+                At the end of this step, we have a <strong>clean, standardized event-level dataset</strong>.
+                <br><br>
+                Each row clearly answers:
+                <ul>
+                    <li><strong>Who</strong> the client is</li>
+                    <li><strong>What</strong> product they bought</li>
+                    <li><strong>When</strong> they bought it</li>
+                </ul>
+                This dataset becomes the foundation for all downstream modeling.
+            </div>
+        </div>
+
+        <!-- EXTRACTED FIELDS -->
+        <div class="section-divider">
+            <div class="section-subtitle">📦 Data Fields Extracted</div>
+        </div>
+
+        <div class="info-grid">
+            <div class="info-card">
+                <div class="info-card-title">Product & Policy</div>
+                <div class="info-card-content">
+                    product_category, register_date, policy_status
+                </div>
+            </div>
+
+            <div class="info-card">
+                <div class="info-card-title">Financial Metrics</div>
+                <div class="info-card-content">
+                    acct_val_amt, face_amt, cash_val_amt, total assets,
+                    asset mix (stocks, bonds, MF, annuity, deposits)
+                </div>
+            </div>
+
+            <div class="info-card">
+                <div class="info-card-title">Demographics</div>
+                <div class="info-card-content">
+                    age, client segment, AUM band
+                </div>
+            </div>
+
+            <div class="info-card">
+                <div class="info-card-title">Channel Information</div>
+                <div class="info-card-content">
+                    channel, agent segment, branch office
+                </div>
+            </div>
+        </div>
+
+        <!-- TRAIN / TEST CONTEXT -->
+        <div class="detail-box" style="margin-top:15px;">
+            <div class="detail-title">🔀 How This Data Is Used for Training & Testing</div>
+            <div style="font-size:12px; line-height:1.6; color:#555;">
+                This extracted data is <strong>not yet used for training</strong>.
+                <br><br>
+                In later steps:
+                <ul>
+                    <li>Client purchase events are ordered into timelines</li>
+                    <li>These timelines are converted into learning examples</li>
+                    <li>The examples are then split into:
+                        <ul>
+                            <li><strong>Training data (80%)</strong> – to teach the model</li>
+                            <li><strong>Validation data (10%)</strong> – to tune and stop overfitting</li>
+                            <li><strong>Test data (10%)</strong> – to verify real-world performance</li>
+                        </ul>
+                    </li>
+                </ul>
+                Step 1 ensures all three sets are built from <strong>clean, trustworthy data</strong>.
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Slide 4: Model Training - How the Model Learns -->
+<div class="slide">
+
+    <div class="slide-header">
+        <h1 class="slide-title">🧠 Model Training – How the Model Learns</h1>
+    </div>
+
+    <div class="slide-content">
+
+        <!-- Training Data Flow -->
+        <div class="section-divider">
+            <div class="section-subtitle">📊 Training Data Flow</div>
+        </div>
+
+        <div class="flow-row">
+
+            <div class="flow-box">
+                <div class="box-icon">📦</div>
+                <div class="box-title">Prepared Learning Data</div>
+                <div class="box-content">
+                    Clean and structured data from earlier steps.
+                    <br><br>
+                    Each example includes:
+                    <ul>
+                        <li>Client purchase history</li>
+                        <li>Client profile</li>
+                        <li>Actual next product bought</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box highlight-box">
+                <div class="box-icon">🎓</div>
+                <div class="box-title">Training Set (80%)</div>
+                <div class="box-content">
+                    Used to teach the model.
+                    <br><br>
+                    Learns patterns from historical behavior.
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box">
+                <div class="box-icon">🧪</div>
+                <div class="box-title">Validation Set (10%)</div>
+                <div class="box-content">
+                    Used during training to:
+                    <ul>
+                        <li>Monitor learning quality</li>
+                        <li>Prevent overfitting</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box success-box">
+                <div class="box-icon">🏁</div>
+                <div class="box-title">Test Set (10%)</div>
+                <div class="box-content">
+                    Never shown during training.
+                    <br><br>
+                    Confirms real-world performance.
+                </div>
+            </div>
+
+        </div>
+
+        <!-- How Model Learns -->
+        <div class="section-divider">
+            <div class="section-subtitle">🤖 How the Model Learns Patterns</div>
+        </div>
+
+        <div class="flow-row">
+
+            <div class="flow-box">
+                <div class="box-icon">🔍</div>
+                <div class="box-title">Study Past Clients</div>
+                <div class="box-content">
+                    The model analyzes millions of past client journeys.
+                    <br><br>
+                    It observes what clients bought first and what came next.
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box">
+                <div class="box-icon">🌳</div>
+                <div class="box-title">Decision Trees</div>
+                <div class="box-content">
+                    Thousands of decision trees ask questions like:
+                    <ul>
+                        <li>Age group?</li>
+                        <li>Current product?</li>
+                        <li>Asset level?</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box highlight-box">
+                <div class="box-icon">📈</div>
+                <div class="box-title">Pattern Learning</div>
+                <div class="box-content">
+                    Over time, the model learns:
+                    <br><br>
+                    <strong>“Clients like this usually buy this product next.”</strong>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Multi-Class Classification -->
+        <div class="section-divider">
+            <div class="section-subtitle">🎯 What Is Multi-Class Classification?</div>
+        </div>
+
+        <div class="flow-row">
+
+            <div class="flow-box">
+                <div class="box-icon">❓</div>
+                <div class="box-title">Not Yes / No</div>
+                <div class="box-content">
+                    The model does not give a simple yes/no answer.
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box">
+                <div class="box-icon">🔢</div>
+                <div class="box-title">Multiple Choices</div>
+                <div class="box-content">
+                    It evaluates <strong>7 product categories</strong>
+                    and assigns a probability to each.
+                </div>
+            </div>
+
+            <div class="arrow-container"><div class="arrow">→</div></div>
+
+            <div class="flow-box success-box">
+                <div class="box-icon">📊</div>
+                <div class="box-title">Probability Output</div>
+                <div class="box-content">
+                    All probabilities add up to 100%.
+                    <br><br>
+                    The highest one becomes the recommendation.
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Example -->
+        <div class="detail-box">
+            <div class="detail-title">🧩 Simple Example</div>
+            <div style="font-size:12px; line-height:1.6; color:#555;">
+                For a client with only a Retirement account:
+                <ul>
+                    <li>Life Insurance → <strong>96%</strong></li>
+                    <li>Investment → 2%</li>
+                    <li>Health → 1%</li>
+                    <li>Others → 1%</li>
+                </ul>
+                The model confidently recommends <strong>Life Insurance</strong>.
+            </div>
+        </div>
+
+    </div>
+</div>
+
+
+
+
+        <!-- Slide 7: How Model Makes Predictions -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">🔮 How the Model Predicts for New Clients</h1>
+            </div>
+            <div class="slide-content">
+                <div class="section-divider">
+                    <div class="section-subtitle">Understanding the Prediction Process</div>
+                </div>
+
+                <div class="flow-row">
+                    <div class="flow-box">
+                        <div class="box-icon">👤</div>
+                        <div class="box-title">New Client Data</div>
+                        <div class="box-content">
+                            <strong>Example Client:</strong><br>
+                            • Age: 58<br>
+                            • Has: Retirement account<br>
+                            • Assets: $250K<br>
+                            • Channel: Advisor
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🔧</div>
+                        <div class="box-title">Feature Preparation</div>
+                        <div class="box-content">
+                            Convert to same 39 features:<br>
+                            • Purchase history: [Retirement]<br>
+                            • Age: 58<br>
+                            • Asset data<br>
+                            • Channel code<br>
+                            • All other features
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🤖</div>
+                        <div class="box-title">Model Processing</div>
+                        <div class="box-content">
+                            <strong>Model searches trained patterns:</strong><br>
+                            "Clients similar to this one typically bought..."
+                            <br><br>
+                            Runs through 2,000 decision trees
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box success-box">
+                        <div class="box-icon">📊</div>
+                        <div class="box-title">Probability Output</div>
+                        <div class="box-content">
+                            <strong>For all 7 products:</strong><br>
+                            Life Insurance: 96%<br>
+                            Investment: 2%<br>
+                            Health: 1%<br>
+                            Disability: 0.5%<br>
+                            Network: 0.3%<br>
+                            Retirement: 0.1%<br>
+                            Other: 0.1%
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box data-source">
+                        <div class="box-icon">✅</div>
+                        <div class="box-title">Final Recommendation</div>
+                        <div class="box-content">
+                            <strong>If confidence ≥95%:</strong><br>
+                            Recommend Life Insurance
+                            <br><br>
+                            <strong>If <95%:</strong><br>
+                            No recommendation (not confident enough)
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-divider" style="margin-top: 15px;">
+                    <div class="section-subtitle">💡 What Makes the Model Confident?</div>
+                    <div class="detail-box">
+                        <div style="font-size: 12px; line-height: 1.6; color: #555;">
+                            The model is confident when it sees <strong>strong, consistent patterns</strong> in the training data:
+                            <br><br>
+                            <strong style="color: #11998e;">High Confidence Example (96%):</strong><br>
+                            "I've seen 500 clients aged 50-65 with only Retirement accounts, and 480 of them bought Life Insurance next. This new client matches that pattern perfectly!"
+                            <br><br>
+                            <strong style="color: #764ba2;">Low Confidence Example (45%):</strong><br>
+                            "I've seen similar clients buy different products. 45% bought Life Insurance, 30% bought Investment, 25% bought other products. Not clear enough to recommend."
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 8: Monthly Pipeline - When New Data Arrives -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">🔄 Monthly Pipeline - Processing New Clients</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box">
+                        <div class="box-icon">📅</div>
+                        <div class="box-title">12th of Month</div>
+                        <div class="box-content">
+                            <strong>Automated Trigger</strong>
+                            <br><br>
+                            Pipeline runs automatically
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">💾</div>
+                        <div class="box-title">Extract Latest Data</div>
+                        <div class="box-content">
+                            Pull current month data from Databricks
+                            <br><br>
+                            <strong>Filters:</strong><br>
+                            • Exactly 1 product<br>
+                            • Branch code 83<br>
+                            • Active status
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🔧</div>
+                        <div class="box-title">Prepare Features</div>
+                        <div class="box-content">
+                            <strong>Same process as training:</strong><br>
+                            • Convert products to categories<br>
+                            • Build all 39 features<br>
+                            • Handle missing values<br>
+                            • Encode categories
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🤖</div>
+                        <div class="box-title">Load Trained Model</div>
+                        <div class="box-content">
+                            <strong>Uses SAME model</strong> trained earlier (not retrained)
+                            <br><br>
+                            From MLflow registry
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box success-box">
+                        <div class="box-icon">🎯</div>
+                        <div class="box-title">Generate Predictions</div>
+                        <div class="box-content">
+                            Model predicts for each client
+                            <br><br>
+                            <strong>Only keep:</strong><br>
+                            Predictions ≥95% confidence
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flow-row" style="margin-top: 10px;">
+                    <div class="flow-box">
+                        <div class="box-icon">💬</div>
+                        <div class="box-title">SHAP Analysis</div>
+                        <div class="box-content">
+                            <strong>Explains WHY:</strong><br>
+                            "Recommended because of age, current product, and asset level"
+                            <br><br>
+                            Creates natural language talking points
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">👥</div>
+                        <div class="box-title">Join Demographics</div>
+                        <div class="box-content">
+                            Add client contact info, advisor details
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box data-source">
+                        <div class="box-icon">💾</div>
+                        <div class="box-title">Save Results</div>
+                        <div class="box-content">
+                            <strong>Output Table:</strong><br>
+                            eda_smartlist...standalone_tp_predictions_single_policy
+                            <br><br>
+                            <strong>Typical Output:</strong> 1,500-2,000 clients
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box success-box">
+                        <div class="box-icon">📞</div>
+                        <div class="box-title">Advisor Action</div>
+                        <div class="box-content">
+                            Advisors receive list with:<br>
+                            • Client name<br>
+                            • Recommended product<br>
+                            • Confidence score<br>
+                            • Talking points
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stats-banner" style="margin-top: 12px;">
+                    <div class="stat-item">
+                        <div class="stat-number">1,500-2,000</div>
+                        <div class="stat-label">High-Confidence Leads Monthly</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">≥95%</div>
+                        <div class="stat-label">Prediction Confidence</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">100%</div>
+                        <div class="stat-label">Automated Process</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 9: What Happens with New Data - Detailed
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">📥 Deep Dive: What Happens When New Data Arrives</h1>
+            </div>
+            <div class="slide-content">
+                <div class="section-divider">
+                    <div class="section-subtitle">Step-by-Step Process for Each New Client</div>
+                </div>
+
+                <div class="detail-box">
+                    <div class="detail-title">1️⃣ Data Validation & Quality Checks</div>
+                    <div style="font-size: 11px; line-height: 1.5; color: #555; margin-top: 8px;">
+                        <strong>• Check completeness:</strong> Does client have all required fields?<br>
+                        <strong>• Verify product category:</strong> Can we map their product to one of our 7 categories?<br>
+                        <strong>• Confirm active status:</strong> Is the policy active?<br>
+                        <strong>• Single product validation:</strong> Do they have exactly 1 product?<br>
+                        <strong>• Branch filter:</strong> Is branch office code = 83?
+                    </div>
+                </div>
+
+                <div class="detail-box">
+                    <div class="detail-title">2️⃣ Feature Engineering (Same as Training)</div>
+                    <div style="font-size: 11px; line-height: 1.5; color: #555; margin-top: 8px;">
+                        <strong>• Purchase History Features:</strong> Since they have 1 product, history = [0,0,0,0,0,0,0,0,0,CurrentProduct]<br>
+                        <strong>• Sequence Stats:</strong> seq_len=1, last_1=CurrentProduct, last_2=0, unique_prior=1, num_switches=0<br>
+                        <strong>• Frequencies:</strong> freq_X=1 (where X is their current product), all others=0<br>
+                        <strong>• Financial:</strong> Extract all 11 financial metrics, fill missing with 0<br>
+                        <strong>• Demographics:</strong> Age<br>
+                        <strong>• Categorical:</strong> Encode segment, channel, branch (convert text to numbers using saved mappings)
+                    </div>
+                </div>
+
+                <div class="detail-box">
+                    <div class="detail-title">3️⃣ Model Prediction Process</div>
+                    <div style="font-size: 11px; line-height: 1.5; color: #555; margin-top: 8px;">
+                        <strong>• Load model:</strong> Retrieve the trained LightGBM model from MLflow<br>
+                        <strong>• Input features:</strong> Pass all 39 features to the model<br>
+                        <strong>• Tree traversal:</strong> Data flows through 2,000 decision trees<br>
+                        <strong>• Probability calculation:</strong> Each tree votes, votes are aggregated into probabilities for 7 classes<br>
+                        <strong>• Softmax normalization:</strong> Ensures all 7 probabilities sum to 100%<br>
+                        <strong>• Select highest:</strong> Pick the product with maximum probability
+                    </div>
+                </div>
+
+                <div class="detail-box">
+                    <div class="detail-title">4️⃣ Confidence Filtering & SHAP Explanation</div>
+                    <div style="font-size: 11px; line-height: 1.5; color: #555; margin-top: 8px;">
+                        <strong>• Confidence check:</strong> Is max probability ≥95%? If NO → Discard (not confident enough)<br>
+                        <strong>• SHAP analysis:</strong> If YES → Run SHAP to explain "why this recommendation?"<br>
+                        <strong>• Feature importance:</strong> Which features contributed most? (e.g., "Age was most important, followed by current product")<br>
+                        <strong>• Generate talking points:</strong> Convert SHAP values to natural language<br>
+                        <strong>Example:</strong> "Client's age group and retirement account suggest strong need for life insurance protection"
+                    </div>
+                </div>
+
+                <div class="detail-box">
+                    <div class="detail-title">5️⃣ Final Output Assembly</div>
+                    <div style="font-size: 11px; line-height: 1.5; color: #555; margin-top: 8px;">
+                        <strong>• Client ID</strong><br>
+                        <strong>• Current Product:</strong> What they have now<br>
+                        <strong>• Recommended Product:</strong> What to offer next<br>
+                        <strong>• Confidence Score:</strong> How sure we are (95-100%)<br>
+                        <strong>• Talking Points:</strong> Why this makes sense for this client<br>
+                        <strong>• Demographics:</strong> Contact info, advisor assignment<br>
+                        <strong>• Save to table:</strong> Ready for advisors to use
+                    </div>
+                </div>
+            </div>
+        </div> -->
+
+        <!-- Slide 10: Cross-sell Output & Benefits -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">💼 Cross-sell Output & Business Benefits</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box data-source">
+                        <div class="box-icon">📋</div>
+                        <div class="box-title">Prediction Results</div>
+                        <div class="box-content">
+                            <strong>For each client:</strong><br>
+                            • Client ID<br>
+                            • Current product<br>
+                            • Recommended product<br>
+                            • Confidence score<br>
+                            • All demographics
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">💬</div>
+                        <div class="box-title">Talking Points</div>
+                        <div class="box-content">
+                            <strong>Natural language explanations:</strong><br>
+                            "Based on similar clients in your age group with retirement accounts, life insurance is typically the next product of interest"
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box success-box">
+                        <div class="box-icon">📞</div>
+                        <div class="box-title">Advisor Action</div>
+                        <div class="box-content">
+                            <strong>Advisors can:</strong><br>
+                            • Prioritize outreach<br>
+                            • Personalize conversations<br>
+                            • Use data-backed reasons<br>
+                            • Increase success rate
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px;">
+                    <div style="font-size: 18px; font-weight: 700; margin-bottom: 12px;">✨ Key Business Benefits</div>
+                    <div class="info-grid">
+                        <div style="background: rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;">
+                            <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px;">🎯 Precision Targeting</div>
+                            <div style="font-size: 11px;">Only high-confidence recommendations (≥95%), eliminating guesswork</div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;">
+                            <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px;">⏱️ Time Efficiency</div>
+                            <div style="font-size: 11px;">1,500-2,000 pre-qualified leads monthly - no manual analysis needed</div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;">
+                            <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px;">📈 Higher Success Rate</div>
+                            <div style="font-size: 11px;">85% model accuracy based on proven historical patterns</div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;">
+                            <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px;">🗣️ Better Conversations</div>
+                            <div style="font-size: 11px;">Data-backed talking points for meaningful client discussions</div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;">
+                            <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px;">🔄 Consistent Quality</div>
+                            <div style="font-size: 11px;">Same trained model ensures reliable, consistent recommendations</div>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.15); padding: 12px; border-radius: 8px;">
+                            <div style="font-weight: 700; margin-bottom: 4px; font-size: 13px;">📊 Scalable Process</div>
+                            <div style="font-size: 11px;">Fully automated monthly pipeline - handles any volume</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stats-banner" style="margin-top: 15px; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);">
+                    <div class="stat-item">
+                        <div class="stat-number">85%</div>
+                        <div class="stat-label">Prediction Accuracy</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">1,500-2,000</div>
+                        <div class="stat-label">Monthly Qualified Leads</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">≥95%</div>
+                        <div class="stat-label">Confidence Threshold</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">0</div>
+                        <div class="stat-label">Manual Effort Required</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 11: Complete Pipeline Summary -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">🔄 Complete Pipeline Summary</h1>
+            </div>
+            <div class="slide-content" style="justify-content: center;">
+                <div class="section-divider">
+                    <div class="section-subtitle">📊 One-Time Model Training (Already Completed)</div>
+                </div>
+                <div class="flow-row">
+                    <div class="flow-box data-source" style="min-width: 140px;">
+                        <div class="box-icon">💾</div>
+                        <div class="box-title">Extract 48M+ Records</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box" style="min-width: 140px;">
+                        <div class="box-icon">🔧</div>
+                        <div class="box-title">Prepare & Engineer Features</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box highlight-box" style="min-width: 140px;">
+                        <div class="box-icon">🧠</div>
+                        <div class="box-title">Train LightGBM Model</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box success-box" style="min-width: 140px;">
+                        <div class="box-icon">✅</div>
+                        <div class="box-title">85% Accuracy Achieved</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box data-source" style="min-width: 140px;">
+                        <div class="box-icon">💾</div>
+                        <div class="box-title">Save to MLflow</div>
+                    </div>
+                </div>
+
+                <div class="section-divider" style="margin-top: 20px;">
+                    <div class="section-subtitle">🔄 Monthly Automated Pipeline (Ongoing)</div>
+                </div>
+                <div class="flow-row">
+                    <div class="flow-box" style="min-width: 120px;">
+                        <div class="box-icon">📅</div>
+                        <div class="box-title">12th of Month Trigger</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box" style="min-width: 120px;">
+                        <div class="box-icon">🔍</div>
+                        <div class="box-title">Filter Single-Product Clients</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box highlight-box" style="min-width: 120px;">
+                        <div class="box-icon">🔧</div>
+                        <div class="box-title">Prepare 39 Features</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box highlight-box" style="min-width: 120px;">
+                        <div class="box-icon">🤖</div>
+                        <div class="box-title">Run Trained Model</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box" style="min-width: 120px;">
+                        <div class="box-icon">✂️</div>
+                        <div class="box-title">Filter ≥95% Confidence</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box success-box" style="min-width: 120px;">
+                        <div class="box-icon">💬</div>
+                        <div class="box-title">Generate Talking Points</div>
+                    </div>
+                    <div class="arrow-container"><div class="arrow">→</div></div>
+                    <div class="flow-box data-source" style="min-width: 120px;">
+                        <div class="box-icon">📞</div>
+                        <div class="box-title">Deliver to Advisors</div>
+                    </div>
+                </div>
+
+                <div class="objective-banner" style="margin-top: 20px;">
+                    <strong>Result:</strong> 1,500-2,000 high-quality, data-backed cross-sell opportunities delivered to advisors every month with 95%+ confidence
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 12: Thank You -->
+        <div class="slide thank-you-slide">
+            <h1 class="slide-title">Thank You</h1>
+            <p style="font-size: 24px; color: #667eea; margin-top: 20px; animation: fadeInUp 1.2s ease-out;">Questions?</p>
+        </div>
+    </div>
+
+    <div class="slide-counter">
+        <span id="current-slide">1</span> / <span id="total-slides">12</span>
+    </div>
+
+    <div class="controls">
+        <button id="prev-btn" onclick="previousSlide()">← Previous</button>
+        <button id="next-btn" onclick="nextSlide()">Next →</button>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+
+        document.getElementById('total-slides').textContent = totalSlides;
+
+        function updateSlide() {
+            slides.forEach((slide, index) => {
+                slide.classList.remove('active');
+                if (index === currentSlide) {
+                    slide.classList.add('active');
+                }
+            });
+
+            document.getElementById('current-slide').textContent = currentSlide + 1;
+            document.getElementById('prev-btn').disabled = currentSlide === 0;
+            document.getElementById('next-btn').disabled = currentSlide === totalSlides - 1;
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides - 1) {
+                currentSlide++;
+                updateSlide();
+            }
+        }
+
+        function previousSlide() {
+            if (currentSlide > 0) {
+                currentSlide--;
+                updateSlide();
+            }
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                e.preventDefault();
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                previousSlide();
+            }
+        });
+
+        updateSlide();
+    </script>
+</body>
+</html>>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">🏷️</div>
+                        <div class="box-title">Categorize Products</div>
+                        <div class="box-content">
+                            <strong>Convert to 7 Categories:</strong>
+                            <ul>
+                                <li>Life Insurance</li>
+                                <li>Retirement</li>
+                                <li>Investment</li>
+                                <li>Network Products</li>
+                                <li>Disability</li>
+                                <li>Health</li>
+                                <li>Other</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">✅</div>
+                        <div class="box-title">Apply Filters</div>
+                        <div class="box-content">
+                            <strong>Quality Checks:</strong>
+                            <ul>
+                                <li>Non-null Client ID</li>
+                                <li>Non-null Register Date</li>
+                                <li>Non-null Product Category</li>
+                                <li>Active Policies Only</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box success-box">
+                        <div class="box-icon">📊</div>
+                        <div class="box-title">Sampling</div>
+                        <div class="box-content">
+                            <strong>For Efficiency:</strong><br>
+                            20% random sample
+                            <br><br>
+                            <strong>Result:</strong><br>
+                            ~49M event rows
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-divider">
+                    <div class="section-subtitle">📦 Data Fields Extracted</div>
+                    <div class="info-grid">
+                        <div class="info-card">
+                            <div class="info-card-title">Product Information</div>
+                            <div class="info-card-content">Product category, registration date, policy status</div>
+                        </div>
+                        <div class="info-card">
+                            <div class="info-card-title">Financial Metrics</div>
+                            <div class="info-card-content">Account value, face amount, cash value, total assets, asset mix (stocks, bonds, mutual funds, annuities)</div>
+                        </div>
+                        <div class="info-card">
+                            <div class="info-card-title">Demographics</div>
+                            <div class="info-card-content">Age, client segment, AUM band</div>
+                        </div>
+                        <div class="info-card">
+                            <div class="info-card-title">Channel Information</div>
+                            <div class="info-card-content">Preferred channel (Advisor/Direct/Online), agent segment, branch office code</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 4: Data Preparation - Building Client Sequences -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">📚 Step 2: Building Client Purchase Sequences</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box">
+                        <div class="box-icon">📅</div>
+                        <div class="box-title">Order Events</div>
+                        <div class="box-content">
+                            Sort purchases by date for each client
+                            <br><br>
+                            <strong>Creates timeline:</strong><br>
+                            1st product → 2nd → 3rd...
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">🔄</div>
+                        <div class="box-title">Group by Client</div>
+                        <div class="box-content">
+                            Combine all purchases for each client
+                            <br><br>
+                            <strong>Example:</strong><br>
+                            Client A: Retirement, Life Insurance, Investment
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">🎯</div>
+                        <div class="box-title">Remove Duplicates</div>
+                        <div class="box-content">
+                            Remove back-to-back same products
+                            <br><br>
+                            <strong>Example:</strong><br>
+                            Retirement, Retirement, Life → Retirement, Life
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box">
+                        <div class="box-icon">✂️</div>
+                        <div class="box-title">Filter Clients</div>
+                        <div class="box-content">
+                            Keep clients with ≥2 products
+                            <br><br>
+                            <strong>Reason:</strong><br>
+                            Need history to learn from
+                            <br><br>
+                            <strong>Result:</strong> 388K+ clients
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-divider">
+                    <div class="section-subtitle">🎓 Creating Training Examples - The Sliding Window Approach</div>
+                    <div class="detail-box">
+                        <div style="font-size: 12px; line-height: 1.6; color: #555;">
+                            <strong style="color: #667eea;">Think of it like this:</strong> If a client bought Retirement, then Life Insurance, then Investment - we can learn from this journey!
+                            <br><br>
+                            <strong>Example 1:</strong> When they only had [Retirement] → They bought Life Insurance next<br>
+                            <strong>Example 2:</strong> When they had [Retirement, Life Insurance] → They bought Investment next
+                            <br><br>
+                            <strong style="color: #667eea;">Result:</strong> Each client with 3 products creates 2 learning examples. More products = more examples!<br>
+                            <strong>Total Training Examples Created: 464,400+</strong>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 5: Feature Engineering -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">🔧 Step 3: Feature Engineering - Teaching the Model</h1>
+            </div>
+            <div class="slide-content">
+                <div class="section-divider">
+                    <div class="section-subtitle">What Information Do We Give the Model?</div>
+                </div>
+
+                <div class="info-grid">
+                    <div class="info-card">
+                        <div class="info-card-title">📜 Purchase History (10 slots)</div>
+                        <div class="info-card-content">
+                            Last 10 products purchased in order<br>
+                            <strong>Example:</strong> [Empty, Empty, Empty, Empty, Empty, Empty, Empty, Retirement, Life, Investment]
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">📊 Sequence Statistics (5 features)</div>
+                        <div class="info-card-content">
+                            • How many products in history?<br>
+                            • What was the last product?<br>
+                            • What was before that?<br>
+                            • How many different products tried?<br>
+                            • How many times did they switch products?
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">🔢 Product Frequencies (7 features)</div>
+                        <div class="info-card-content">
+                            Count how many times each product category appears<br>
+                            <strong>Example:</strong> Retirement: 2 times, Life: 1 time, Investment: 0 times...
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">💰 Financial Profile (11 features)</div>
+                        <div class="info-card-content">
+                            Account values, total assets, how money is invested (stocks %, bonds %, mutual funds %, annuities %)
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">👤 Demographics (1 feature)</div>
+                        <div class="info-card-content">
+                            Client age - important for life stage targeting
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-card-title">🏢 Business Context (6 features)</div>
+                        <div class="info-card-content">
+                            Client segment, AUM band, preferred channel (Advisor/Direct/Online), agent segment, branch office
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stats-banner" style="margin-top: 15px;">
+                    <div class="stat-item">
+                        <div class="stat-number">39</div>
+                        <div class="stat-label">Total Features Used</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">464K+</div>
+                        <div class="stat-label">Training Examples</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">80/10/10</div>
+                        <div class="stat-label">Train/Validation/Test Split</div>
+                    </div>
+                </div>
+
+                <div class="detail-box" style="margin-top: 12px;">
+                    <div style="font-size: 12px; color: #555; line-height: 1.5;">
+                        <strong style="color: #667eea;">Why Split the Data?</strong><br>
+                        • <strong>80% Training:</strong> Model learns patterns from this data<br>
+                        • <strong>10% Validation:</strong> Check if model is learning correctly (prevents overfitting)<br>
+                        • <strong>10% Test:</strong> Final exam - see how well model performs on completely unseen data
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slide 6: Model Training - How It Works -->
+        <div class="slide">
+            <div class="slide-header">
+                <h1 class="slide-title">🧠 Step 4: Model Training - How the Model Learns</h1>
+            </div>
+            <div class="slide-content">
+                <div class="flow-row">
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">📚</div>
+                        <div class="box-title">Load Training Data</div>
+                        <div class="box-content">
+                            464,400 examples with 39 features each
+                            <br><br>
+                            Each example = a moment in a client's journey
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🌳</div>
+                        <div class="box-title">LightGBM Algorithm</div>
+                        <div class="box-content">
+                            <strong>Builds decision trees:</strong><br>
+                            "If age > 50 AND has Retirement → likely needs Life Insurance"
+                            <br><br>
+                            Builds 2,000 trees, each learning from previous mistakes
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div>
+                    </div>
+
+                    <div class="flow-box highlight-box">
+                        <div class="box-icon">🎯</div>
+                        <div class="box-title">Multi-Class Prediction</div>
+                        <div class="box-content">
+                            <strong>For each client, predicts probability for ALL 7 products:</strong><br>
+                            Life Insurance: 65%<br>
+                            Investment: 20%<br>
+                            Retirement: 10%<br>
+                            Others: 5%
+                        </div>
+                    </div>
+
+                    <div class="arrow-container">
+                        <div class="arrow">→</div
