@@ -475,7 +475,6 @@
                 </div>
             </div>
         </div> -->
-
 <!-- Slide 3: Data Extraction - Source & Filtering -->
 <div class="slide">
     <div class="slide-header">
@@ -491,16 +490,15 @@
                 <div class="box-icon">🏦</div>
                 <div class="box-title">Raw Client Data</div>
                 <div class="box-content">
-                    We begin with raw client data pulled from the company data platform.
+                    We begin with raw client data pulled from the enterprise data platform.
                     <br><br>
                     <strong>Includes:</strong>
                     <ul>
                         <li>Client identifiers</li>
                         <li>Products owned</li>
                         <li>Financial values</li>
-                        <li>Purchase dates</li>
+                        <li>Purchase / registration dates</li>
                     </ul>
-                    <strong>Scale:</strong> 48+ million records
                 </div>
             </div>
 
@@ -510,13 +508,13 @@
                 <div class="box-icon">🧹</div>
                 <div class="box-title">Clean & Standardize</div>
                 <div class="box-content">
-                    Raw data is inconsistent and difficult to use directly.
+                    Raw data is inconsistent and not model-ready.
                     <br><br>
                     We standardize it by:
                     <ul>
-                        <li>Merging multiple product fields</li>
+                        <li>Combining multiple product fields</li>
                         <li>Mapping them into <strong>7 clear product categories</strong></li>
-                        <li>Ensuring one product label per record</li>
+                        <li>Ensuring one product per event</li>
                     </ul>
                 </div>
             </div>
@@ -527,9 +525,9 @@
                 <div class="box-icon">🔍</div>
                 <div class="box-title">Quality Checks</div>
                 <div class="box-content">
-                    We remove unreliable data to avoid misleading results.
+                    Only reliable data is retained.
                     <br><br>
-                    Only keep records where:
+                    We keep records where:
                     <ul>
                         <li>Client ID is present</li>
                         <li>Purchase date is available</li>
@@ -545,12 +543,12 @@
                 <div class="box-icon">⚡</div>
                 <div class="box-title">Smart Sampling</div>
                 <div class="box-content">
-                    Processing the full dataset is unnecessary and expensive.
+                    Full data volume is extremely large.
                     <br><br>
-                    To stay efficient:
+                    To remain efficient:
                     <ul>
-                        <li>A <strong>random 20%</strong> sample is selected</li>
-                        <li>Patterns remain statistically representative</li>
+                        <li><strong>20% random sample</strong> is applied</li>
+                        <li>Behavioral patterns remain representative</li>
                     </ul>
                     <strong>Result:</strong> ~49 million clean purchase events
                 </div>
@@ -564,76 +562,135 @@
             <div style="font-size:12px; line-height:1.6; color:#555;">
                 At the end of this step, we have a <strong>clean, standardized event-level dataset</strong>.
                 <br><br>
-                Each row clearly answers:
+                Each row answers:
                 <ul>
                     <li><strong>Who</strong> the client is</li>
                     <li><strong>What</strong> product they bought</li>
                     <li><strong>When</strong> they bought it</li>
                 </ul>
-                This dataset becomes the foundation for all downstream modeling.
+                This forms the foundation for all downstream learning.
             </div>
         </div>
 
-        <!-- EXTRACTED FIELDS -->
+        <!-- EVENT-LEVEL FIELDS -->
         <div class="section-divider">
-            <div class="section-subtitle">📦 Data Fields Extracted</div>
+            <div class="section-subtitle">📦 Event-Level Fields Extracted</div>
         </div>
 
         <div class="info-grid">
             <div class="info-card">
                 <div class="info-card-title">Product & Policy</div>
                 <div class="info-card-content">
-                    product_category, register_date, policy_status
+                    product_category<br>
+                    register_date<br>
+                    policy_status
                 </div>
             </div>
 
             <div class="info-card">
-                <div class="info-card-title">Financial Metrics</div>
+                <div class="info-card-title">Identifiers</div>
                 <div class="info-card-content">
-                    acct_val_amt, face_amt, cash_val_amt, total assets,
-                    asset mix (stocks, bonds, MF, annuity, deposits)
-                </div>
-            </div>
-
-            <div class="info-card">
-                <div class="info-card-title">Demographics</div>
-                <div class="info-card-content">
-                    age, client segment, AUM band
-                </div>
-            </div>
-
-            <div class="info-card">
-                <div class="info-card-title">Channel Information</div>
-                <div class="info-card-content">
-                    channel, agent segment, branch office
+                    cont_id (Client ID)
                 </div>
             </div>
         </div>
 
+        <!-- CLIENT FEATURES JOINED LATER -->
+        <div class="section-divider">
+            <div class="section-subtitle">➕ Client-Level Features (Joined Later)</div>
+        </div>
+
+        <div class="detail-box">
+            <div style="font-size:12px; line-height:1.6; color:#555;">
+                In addition to purchase events, several <strong>client-level attributes</strong>
+                are created separately and <strong>joined later</strong> to enrich training examples.
+            </div>
+        </div>
+
+        <div class="info-grid">
+
+            <div class="info-card">
+                <div class="info-card-title">💰 Financial Features</div>
+                <div class="info-card-content">
+                    acct_val_amt (Account value)<br>
+                    face_amt (Face amount)<br>
+                    cash_val_amt (Cash value)<br>
+                    wc_total_assets (Total assets)<br>
+                    Asset mix:
+                    <ul>
+                        <li>Stocks</li>
+                        <li>Bonds</li>
+                        <li>Mutual funds</li>
+                        <li>Annuity</li>
+                        <li>Deposits</li>
+                        <li>Other assets</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="info-card">
+                <div class="info-card-title">👤 Demographic Feature</div>
+                <div class="info-card-content">
+                    psn_age (Client age)
+                </div>
+            </div>
+
+            <div class="info-card">
+                <div class="info-card-title">🏢 Categorical / Business Context</div>
+                <div class="info-card-content">
+                    client_seg<br>
+                    client_seg_1<br>
+                    aum_band<br>
+                    channel<br>
+                    agent_segment<br>
+                    branchoffice_code
+                </div>
+            </div>
+
+        </div>
+
+        <!-- JOIN EXPLANATION -->
+        <div class="detail-box" style="margin-top:12px;">
+            <div class="detail-title">🔗 How These Features Are Combined</div>
+            <div style="font-size:12px; line-height:1.6; color:#555;">
+                Client-level features are joined to purchase events using a
+                <strong>LEFT JOIN</strong>.
+                <br><br>
+                <strong>Why LEFT JOIN?</strong>
+                <ul>
+                    <li>Preserves <strong>all training examples</strong></li>
+                    <li>Avoids dropping valid purchase histories</li>
+                    <li>Handles missing client attributes safely</li>
+                </ul>
+                This ensures learning is driven by behavior first, with attributes as enrichment.
+            </div>
+        </div>
+
         <!-- TRAIN / TEST CONTEXT -->
-        <div class="detail-box" style="margin-top:15px;">
+        <div class="detail-box" style="margin-top:12px;">
             <div class="detail-title">🔀 How This Data Is Used for Training & Testing</div>
             <div style="font-size:12px; line-height:1.6; color:#555;">
-                This extracted data is <strong>not yet used for training</strong>.
+                This extracted data is <strong>not used for training yet</strong>.
                 <br><br>
                 In later steps:
                 <ul>
-                    <li>Client purchase events are ordered into timelines</li>
-                    <li>These timelines are converted into learning examples</li>
-                    <li>The examples are then split into:
+                    <li>Events are ordered into client timelines</li>
+                    <li>Timelines are converted into learning examples</li>
+                    <li>Examples are split into:
                         <ul>
-                            <li><strong>Training data (80%)</strong> – to teach the model</li>
-                            <li><strong>Validation data (10%)</strong> – to tune and stop overfitting</li>
-                            <li><strong>Test data (10%)</strong> – to verify real-world performance</li>
+                            <li><strong>Training (80%)</strong> – model learning</li>
+                            <li><strong>Validation (10%)</strong> – tuning & overfitting control</li>
+                            <li><strong>Test (10%)</strong> – final unbiased evaluation</li>
                         </ul>
                     </li>
                 </ul>
-                Step 1 ensures all three sets are built from <strong>clean, trustworthy data</strong>.
+                Step 1 guarantees all three sets are built on clean, trustworthy data.
             </div>
         </div>
 
     </div>
 </div>
+
 
 <!-- Slide 4: Model Training - How the Model Learns -->
 <div class="slide">
