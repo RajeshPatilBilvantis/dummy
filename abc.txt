@@ -1,5 +1,305 @@
-take a business_month, say, 202509 from dl_tenants_daas.us_wealth_management.wealth_management_client_metrics. 
-take all the axa_party_id who has a single policy (policy_no is an indicator of a policy and axa_party_id is the unique client identifier).
-compare these axa_party_id with the same ones in business_month 202510 and filter the records from 202510 who has more than 1 policy for these axa_party_id.
-then, we take these axa_party_id and pass them through our model(model which isin current code) for validation. if the prediction and the above compared clients' second policy is same, we can say that our model is performing well.
-also write up what you did at last
+# ============================================
+# PREDICTIONS FOR BRANCH OFFICE 83 - MOST RECENT BUSINESS_MONTH
+# For cont_id with only ONE policy (policy_no)
+# Using feature logic from cell 4 exactly
+# ============================================
+
+from pyspark.sql import functions as F, Window
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+import numpy as np
+import pandas as pd
+import mlflow
+import mlflow.lightgbm
+
+# ------------- 1) Load model from MLflow -------------
+print("Loading model from MLflow...")
+model = mlflow.lightgbm.load_model("models:/eda_smartlist.models.lgbm_model_hyperparameter_310126/1")
+print("Model loaded successfully!")
+
+# ------------- 2) Load filtered data: branchoffice_code='83' and most recent business_month -------------
+df_pred_raw = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+
+# Apply product_category transformation (same as training - cell 4)
+df_pred_raw = df_pred_raw.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .otherwise("OTHER")
+)
+
+# Filter for branchoffice_code = '83'
+df_pred_raw = df_pred_raw.filter(F.col("branchoffice_code") == "83")
+
+# Get most recent business_month
+max_business_month = df_pred_raw.select(F.max("business_month").alias("max_month")).collect()[0]["max_month"]
+print(f"Most recent business_month: {max_business_month}")
+
+# Filter for most recent business_month
+df_pred_raw = df_pred_raw.filter(F.col("business_month") == max_business_month)
+
+print(f"Rows for prediction (branchoffice_code='83', business_month={max_business_month}): {df_pred_raw.count()}")
+
+# ------------- 3) Filter and prepare events (same as cell 4) -------------
+df_pred_events = df_pred_raw.select(
+    "cont_id", "product_category", "register_date", "isrd_brth_date",
+    "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+    "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
+    "branchoffice_code", "policy_status", "policy_no"
+).filter(
+    (F.col("cont_id").isNotNull()) &
+    (F.col("register_date").isNotNull()) &
+    (F.col("product_category").isNotNull()) &
+    (F.col("policy_status") == "Active")
+)
+
+# ------------- 4) Filter to clients with only ONE policy (policy_no) -------------
+# Count policies per client
+w_count = Window.partitionBy("cont_id")
+df_pred_events = df_pred_events.withColumn("total_policies", F.count("*").over(w_count))
+
+# Keep only clients with exactly 1 policy
+df_pred_single = df_pred_events.filter(F.col("total_policies") == 1)
+print(f"Clients with exactly 1 policy: {df_pred_single.count()}")
+
+# ------------- 5) Convert dates and prepare features (same as cell 4) -------------
+df_pred_single = df_pred_single.withColumn("register_ts", F.to_timestamp("register_date"))
+df_pred_single = df_pred_single.withColumn("birth_ts", F.to_timestamp("isrd_brth_date"))
+
+# For single policy clients, treat this as the "first policy" (same structure as cell 4)
+df_first = df_pred_single.select(
+    F.col("cont_id"),
+    F.col("product_category").alias("first_product_category"),
+    F.col("register_ts").alias("first_register_ts"),
+    F.col("birth_ts"),
+    F.col("acct_val_amt").alias("first_acct_val_amt"),
+    F.col("face_amt").alias("first_face_amt"),
+    F.col("cash_val_amt").alias("first_cash_val_amt"),
+    F.col("wc_total_assets"),
+    F.col("wc_assetmix_stocks"),
+    F.col("wc_assetmix_bonds"),
+    F.col("wc_assetmix_mutual_funds"),
+    F.col("wc_assetmix_annuity"),
+    F.col("wc_assetmix_deposits"),
+    F.col("wc_assetmix_other_assets"),
+    F.col("psn_age"),
+    F.col("client_seg"),
+    F.col("client_seg_1"),
+    F.col("aum_band"),
+    F.col("channel"),
+    F.col("agent_segment"),
+    F.col("branchoffice_code")
+)
+
+# ------------- 6) Add NEW FEATURES (same as cell 4) -------------
+
+# Asset allocation ratios (based on first policy state)
+df_first = df_first.withColumn(
+    "stock_allocation_ratio",
+    F.col("wc_assetmix_stocks") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+df_first = df_first.withColumn(
+    "bond_allocation_ratio",
+    F.col("wc_assetmix_bonds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+df_first = df_first.withColumn(
+    "annuity_allocation_ratio",
+    F.col("wc_assetmix_annuity") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+df_first = df_first.withColumn(
+    "mutual_fund_allocation_ratio",
+    F.col("wc_assetmix_mutual_funds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+
+# Season of first policy (Q1-Q4)
+df_first = df_first.withColumn(
+    "season_of_first_policy",
+    F.when(F.month("first_register_ts").between(1, 3), "Q1")
+    .when(F.month("first_register_ts").between(4, 6), "Q2")
+    .when(F.month("first_register_ts").between(7, 9), "Q3")
+    .when(F.month("first_register_ts").between(10, 12), "Q4")
+    .otherwise("Unknown")
+)
+
+# Age at first policy (in years)
+df_first = df_first.withColumn(
+    "age_at_first_policy",
+    F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25
+)
+
+# For single policy clients, years_to_second_policy doesn't exist - set to 0 or None
+# We'll set it to 0 to match the feature structure from training
+df_first = df_first.withColumn("years_to_second_policy", F.lit(0.0))
+
+# ------------- 7) Fill missing values (same as cell 4) -------------
+numeric_cols = [
+    "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
+    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+    "psn_age", "stock_allocation_ratio", "bond_allocation_ratio",
+    "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
+    "age_at_first_policy", "years_to_second_policy"
+]
+fill_dict = {c: 0 for c in numeric_cols}
+df_first = df_first.fillna(fill_dict)
+
+# Categorical columns - fill with mode
+categorical_cols = ["first_product_category", "client_seg", "client_seg_1", "aum_band", 
+                    "channel", "agent_segment", "branchoffice_code", "season_of_first_policy"]
+modes = {}
+for c in categorical_cols:
+    try:
+        m = df_first.groupBy(c).count().orderBy(F.desc("count")).first()[0]
+        modes[c] = m if m is not None else "UNKNOWN"
+    except:
+        modes[c] = "UNKNOWN"
+
+for c in categorical_cols:
+    df_first = df_first.withColumn(
+        c, F.when(F.col(c).isNull(), F.lit(modes[c])).otherwise(F.col(c))
+    )
+
+# ------------- 8) Encode categorical features (same as cell 4) -------------
+for c in categorical_cols:
+    vals = [r[0] for r in df_first.select(c).distinct().collect()]
+    m = {str(v): i for i, v in enumerate(sorted([str(x) for x in vals]))}
+    b = spark.sparkContext.broadcast(m)
+    df_first = df_first.withColumn(
+        c + "_idx",
+        F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN")))
+    )
+
+# ------------- 9) Define model feature columns (same as cell 4) -------------
+model_feature_cols = [
+    # First policy numeric features
+    "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
+    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+    "psn_age",
+    # NEW allocation ratio features
+    "stock_allocation_ratio", "bond_allocation_ratio",
+    "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
+    # NEW temporal features
+    "age_at_first_policy", "years_to_second_policy",
+    # Encoded categorical features (including FIRST product as feature)
+    "first_product_category_idx", "client_seg_idx", "client_seg_1_idx", "aum_band_idx",
+    "channel_idx", "agent_segment_idx", "branchoffice_code_idx", "season_of_first_policy_idx"
+]
+
+# ------------- 10) Convert to Pandas and prepare for prediction -------------
+pred_pd = df_first.select(["cont_id"] + model_feature_cols).toPandas()
+pred_pd.fillna(0, inplace=True)
+
+print(f"Prediction data shape: {pred_pd.shape}")
+print(f"Feature columns: {len(model_feature_cols)}")
+
+# ------------- 11) Make predictions -------------
+feature_cols_final = model_feature_cols  # Same as training
+pred_probs = model.predict(pred_pd[feature_cols_final])
+pred_class_ids = np.argmax(pred_probs, axis=1)
+
+# Get product mappings from training (should be available from cell 4)
+# If not available, we'll need to recreate them or load from the model
+# For now, assuming prod2id and id2prod are available from cell 4
+try:
+    # Use the mappings from cell 4 if available
+    pred_pd["pred_class_id"] = pred_class_ids
+    pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(lambda x: id2prod.get(x, "UNKNOWN"))
+except NameError:
+    # If mappings not available, create default mapping
+    print("Warning: id2prod not found. Creating default mapping...")
+    # This should match the training vocabulary
+    default_id2prod = {0: "DISABILITY", 1: "HEALTH", 2: "INVESTMENT", 3: "LIFE_INSURANCE", 
+                       4: "NETWORK_PRODUCTS", 5: "OTHER", 6: "RETIREMENT"}
+    pred_pd["pred_class_id"] = pred_class_ids
+    pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(lambda x: default_id2prod.get(x, "UNKNOWN"))
+
+# Add probability columns
+num_classes_pred = pred_probs.shape[1]
+for i in range(num_classes_pred):
+    pred_pd[f"prob_{i}"] = pred_probs[:, i]
+pred_pd["pred_prob"] = pred_pd.apply(lambda r: r[f"prob_{r['pred_class_id']}"], axis=1)
+
+# ------------- 12) Add additional client information -------------
+from pyspark.sql.functions import to_date, current_date, datediff, round as spark_round
+
+axa_map_df_pred = (
+    df_pred_raw
+    .withColumn("client_tenure", spark_round(datediff(current_date(), to_date("register_date")) / 365.25, 2))
+    .select(
+        "cont_id", "axa_party_id", "product_category", "psn_age", "client_seg", "client_seg_1",
+        "aum_band", "channel", "division_name", "branch_name", "business_city", "business_state_cod", "client_tenure"
+    )
+    .dropDuplicates(["cont_id"])
+)
+
+axa_map_pd_pred = axa_map_df_pred.toPandas().drop_duplicates("cont_id")
+
+# Merge predictions with client information
+final_predictions = pred_pd.merge(axa_map_pd_pred, on="cont_id", how="left", suffixes=("", "_dem"))
+
+# Handle psn_age if duplicated
+if "psn_age_dem" in final_predictions.columns:
+    final_predictions["psn_age"] = final_predictions["psn_age_dem"]
+    final_predictions = final_predictions.drop(columns=["psn_age_dem"])
+
+# Select final columns
+prob_cols_final = [c for c in final_predictions.columns if c.startswith("prob_")]
+final_cols_list = [
+    "cont_id", "axa_party_id", "product_category", "psn_age", "client_seg", "client_seg_1",
+    "aum_band", "channel", "division_name", "branch_name", "business_city", "business_state_cod", "client_tenure",
+    "pred_class_id", "pred_product", "pred_prob"
+] + prob_cols_final
+
+final_predictions = final_predictions[final_cols_list]
+
+print(f"\nFinal predictions shape: {final_predictions.shape}")
+print(f"\nFinal predictions sample:")
+display(final_predictions.head(10))
+
+print("\nPrediction summary:")
+print(final_predictions["pred_product"].value_counts())
