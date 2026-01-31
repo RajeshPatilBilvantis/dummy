@@ -1,98 +1,17 @@
 # ============================================
-# SHAP ANALYSIS FOR PREDICTIONS + AGENT TALKING POINTS
+# ENHANCED TALKING POINTS GENERATION
 # ============================================
 
-import shap
-import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 
-print("=" * 60)
-print("SHAP ANALYSIS FOR CLIENT PREDICTIONS")
-print("=" * 60)
+print("💬 Generating Enhanced Talking Points...")
+print("=" * 80)
 
-# Use prediction data for SHAP analysis (sample if too large)
-shap_sample_size = min(100, len(pred_pd))
-shap_pred_data = pred_pd[feature_cols_final].iloc[:shap_sample_size].copy()
-shap_pred_indices = pred_pd.iloc[:shap_sample_size].index
+# First, create df_explanations DataFrame from SHAP analysis results
+# This will contain top features, their values, and SHAP contributions for each client
 
-# Get corresponding final_predictions data for demographic info
-if len(final_predictions) >= shap_sample_size:
-    shap_final_preds = final_predictions.iloc[:shap_sample_size].copy()
-else:
-    shap_final_preds = final_predictions.copy()
-
-print(f"\nComputing SHAP values for {len(shap_pred_data)} prediction samples...")
-print(f"Number of features: {len(feature_cols_final)}")
-
-# Create SHAP explainer
-explainer = shap.TreeExplainer(model)
-
-# Calculate SHAP values for predictions
-shap_values_pred = explainer.shap_values(shap_pred_data)
-
-# Handle different SHAP output formats
-if isinstance(shap_values_pred, list):
-    # List of arrays (one per class)
-    num_classes = len(shap_values_pred)
-    print(f"SHAP values format: List of {num_classes} arrays")
-    print(f"Each array shape: {shap_values_pred[0].shape}")
-else:
-    # Single array - convert to list format
-    shap_array = np.array(shap_values_pred)
-    if len(shap_array.shape) == 3:
-        # Shape is (n_samples, n_features, n_classes) - need to transpose
-        num_classes = shap_array.shape[2]
-        shap_values_pred = [shap_array[:, :, i] for i in range(num_classes)]
-        print(f"SHAP values format: Array shape {shap_array.shape}, converted to list of {num_classes} arrays")
-    else:
-        num_classes = 1
-        shap_values_pred = [shap_array]
-        print(f"SHAP values format: Single array shape {shap_array.shape}")
-
-print(f"Number of classes: {num_classes}")
-
-# ------------- 1) Overall Feature Importance -------------
-print("\n" + "=" * 60)
-print("OVERALL FEATURE IMPORTANCE")
-print("=" * 60)
-
-feature_importance_pred = {}
-for i, feat in enumerate(feature_cols_final):
-    # Calculate mean absolute SHAP value across all classes
-    importance = np.mean([np.mean(np.abs(sv[:, i])) for sv in shap_values_pred])
-    feature_importance_pred[feat] = importance
-
-feature_importance_sorted = sorted(feature_importance_pred.items(), key=lambda x: x[1], reverse=True)
-shap_importance_df = pd.DataFrame(feature_importance_sorted, columns=['Feature', 'Mean_|SHAP_Value|'])
-shap_importance_df['Rank'] = range(1, len(shap_importance_df) + 1)
-
-print("\nTop 15 Most Important Features for Predictions:")
-display(shap_importance_df.head(15))
-
-# ------------- 2) Generate Talking Points for Each Client -------------
-print("\n" + "=" * 60)
-print("GENERATING AGENT TALKING POINTS")
-print("=" * 60)
-
-# Get product name mapping - handle case where label_map might not be available
-try:
-    # Try to use label_map if available (from training)
-    inv_label_map = {v: k for k, v in label_map.items()}
-    final_id2prod = {model_id: id2prod[original_id] for model_id, original_id in inv_label_map.items()}
-except NameError:
-    # If label_map not available, use id2prod directly (assuming it's available from cell 4 or cell 12)
-    try:
-        # Use id2prod directly - the pred_class_id should map directly to product names
-        final_id2prod = id2prod.copy()
-    except NameError:
-        # If id2prod also not available, create default mapping
-        print("Warning: id2prod not found. Using default product mapping.")
-        final_id2prod = {0: "DISABILITY", 1: "HEALTH", 2: "INVESTMENT", 3: "LIFE_INSURANCE", 
-                         4: "NETWORK_PRODUCTS", 5: "OTHER", 6: "RETIREMENT"}
-
-# Create talking points DataFrame
-talking_points_list = []
+df_explanations_list = []
 
 for idx in range(len(shap_pred_data)):
     actual_idx = shap_pred_indices[idx]
@@ -107,315 +26,538 @@ for idx in range(len(shap_pred_data)):
         client_demo = shap_final_preds.iloc[idx]
     
     # Get SHAP values for the predicted class
-    # Ensure pred_class is within valid range
     if pred_class >= len(shap_values_pred):
         pred_class = len(shap_values_pred) - 1
     shap_vals = shap_values_pred[pred_class][idx]
     
-    # Get top contributing features (positive and negative)
+    # Get feature contributions
     feature_contributions = []
     for i, feat in enumerate(feature_cols_final):
         contrib = shap_vals[i]
+        feat_val = shap_pred_data.iloc[idx][feat]
+        
+        # Get actual feature value (try to get from client_demo if available for better context)
+        actual_value = feat_val
+        
+        # Skip index features or map them to actual values
+        if feat.endswith('_idx'):
+            # Try to get the actual categorical value
+            base_feat = feat.replace('_idx', '')
+            if client_demo is not None and base_feat in client_demo:
+                actual_value = client_demo[base_feat]
+            else:
+                # Skip index features if we can't map them
+                continue
+        
+        if client_demo is not None:
+            # Map feature names to actual column names (updated for new feature set from cell 4)
+            feat_mapping = {
+                'first_acct_val_amt': 'acct_val_amt',
+                'first_face_amt': 'face_amt',
+                'first_cash_val_amt': 'cash_val_amt',
+                'acct_val_amt': 'acct_val_amt',
+                'wc_total_assets': 'wc_total_assets',
+                'psn_age': 'psn_age',
+                'channel': 'channel',
+                'client_seg': 'client_seg',
+                'client_seg_1': 'client_seg_1',
+                'aum_band': 'aum_band',
+                'wc_assetmix_stocks': 'wc_assetmix_stocks',
+                'wc_assetmix_annuity': 'wc_assetmix_annuity',
+                'wc_assetmix_bonds': 'wc_assetmix_bonds',
+                'wc_assetmix_mutual_funds': 'wc_assetmix_mutual_funds',
+                'wc_assetmix_deposits': 'wc_assetmix_deposits',
+                'wc_assetmix_other_assets': 'wc_assetmix_other_assets',
+                'face_amt': 'face_amt',
+                'cash_val_amt': 'cash_val_amt',
+            }
+            
+            # Check if we can get a better value from client_demo
+            if feat in feat_mapping:
+                col_name = feat_mapping[feat]
+                if col_name in client_demo:
+                    try:
+                        demo_val = client_demo[col_name]
+                        if pd.notna(demo_val):
+                            actual_value = demo_val
+                    except:
+                        pass
+        
+        # Skip zero values for old frequency features (no longer in feature set, but keep for backward compatibility)
+        if feat.startswith('freq_') and (actual_value == 0 or actual_value == 0.0):
+            continue
+        
+        # Skip index features that can't be mapped to meaningful values
+        if feat.endswith('_idx') and (actual_value is None or actual_value == '' or (isinstance(actual_value, (int, float)) and actual_value == 0)):
+            # Only skip if we can't get a meaningful value from client_demo
+            base_feat = feat.replace('_idx', '')
+            if client_demo is None or base_feat not in client_demo:
+                continue
+        
         feature_contributions.append({
             'feature': feat,
             'shap_value': contrib,
-            'feature_value': shap_pred_data.iloc[idx][feat]
+            'feature_value': actual_value
         })
     
     # Sort by absolute SHAP value
     feature_contributions.sort(key=lambda x: abs(x['shap_value']), reverse=True)
     
-    # Get top 5 positive and top 3 negative contributors
-    top_positive = [f for f in feature_contributions if f['shap_value'] > 0][:5]
-    top_negative = [f for f in feature_contributions if f['shap_value'] < 0][:3]
+    # Get top 5 features
+    top_features = feature_contributions[:5]
     
-    # Build talking points
-    talking_points = []
-    
-    # Main recommendation
-    talking_points.append(f"Based on your client profile and purchase history, we recommend {pred_product} with {pred_prob*100:.1f}% confidence.")
-    
-    # Positive drivers
-    if top_positive:
-        talking_points.append("\nKey reasons for this recommendation:")
-        for i, contrib in enumerate(top_positive, 1):
-            feat = contrib['feature']
-            val = contrib['feature_value']
-            shap_val = contrib['shap_value']
-            
-            # Interpret feature values - updated for new feature set from cell 4
-            if feat == 'first_product_category_idx':
-                # Try to get actual product category name
-                try:
-                    if client_demo is not None and 'product_category' in client_demo:
-                        product_cat = client_demo['product_category']
-                        talking_points.append(f"  {i}. Your current product ({product_cat}) indicates strong alignment with {pred_product}.")
-                    else:
-                        talking_points.append(f"  {i}. Your current product profile strongly supports {pred_product}.")
-                except:
-                    talking_points.append(f"  {i}. Your product profile strongly supports {pred_product}.")
-            
-            elif feat.startswith('first_') and ('acct_val' in feat or 'face_amt' in feat or 'cash_val' in feat):
-                # First policy financial features
-                if 'acct_val' in feat:
-                    talking_points.append(f"  {i}. Your account value of ${val:,.0f} indicates strong capacity for {pred_product}.")
-                elif 'face_amt' in feat:
-                    talking_points.append(f"  {i}. Your face amount of ${val:,.0f} shows significant coverage, supporting {pred_product}.")
-                elif 'cash_val' in feat:
-                    if val > 0:
-                        talking_points.append(f"  {i}. Your cash value of ${val:,.0f} demonstrates accumulated value, aligning with {pred_product}.")
-                    else:
-                        talking_points.append(f"  {i}. Your financial profile indicates {pred_product} would be an excellent fit.")
-            
-            elif 'allocation_ratio' in feat:
-                # Asset allocation ratios
-                ratio_type = feat.replace('_allocation_ratio', '').replace('stock', 'stocks').replace('bond', 'bonds')
-                if val > 0:
-                    talking_points.append(f"  {i}. Your {ratio_type} allocation ({val:.1%}) indicates a portfolio structure that supports {pred_product}.")
-                else:
-                    talking_points.append(f"  {i}. Your asset allocation profile suggests {pred_product} would complement your portfolio.")
-            
-            elif feat == 'age_at_first_policy':
-                age_val = int(val) if val > 0 else None
-                if age_val:
-                    talking_points.append(f"  {i}. At age {age_val} when you first purchased, {pred_product} aligns well with your life stage and financial planning needs.")
-                else:
-                    talking_points.append(f"  {i}. Your age profile indicates {pred_product} would be an excellent fit for your financial goals.")
-            
-            elif feat == 'years_to_second_policy':
-                # For single-policy clients, this will be 0, so we can skip or provide generic message
-                if val > 0:
-                    talking_points.append(f"  {i}. Your engagement pattern over {val:.1f} years shows readiness for {pred_product}.")
-                # Skip if 0 (single policy clients)
-            
-            elif feat == 'psn_age':
-                age_val = int(val) if val > 0 else (int(client_demo['psn_age']) if client_demo is not None and 'psn_age' in client_demo and pd.notna(client_demo['psn_age']) else None)
-                if age_val:
-                    talking_points.append(f"  {i}. At age {age_val}, {pred_product} aligns well with your life stage and financial planning needs.")
-                else:
-                    talking_points.append(f"  {i}. Your age profile indicates {pred_product} would be an excellent fit for your financial goals.")
-            
-            elif feat == 'client_tenure' or 'tenure' in feat.lower():
-                tenure_val = val if val > 0 else (client_demo['client_tenure'] if client_demo is not None and 'client_tenure' in client_demo and pd.notna(client_demo['client_tenure']) else None)
-                if tenure_val:
-                    talking_points.append(f"  {i}. With {tenure_val:.1f} years as our client, {pred_product} represents a natural next step in your relationship with us.")
-                else:
-                    talking_points.append(f"  {i}. As a valued client, {pred_product} represents a natural next step in your relationship with us.")
-            
-            elif feat == 'wc_total_assets':
-                if val > 0:
-                    talking_points.append(f"  {i}. Your total assets of ${val:,.0f} indicate strong capacity for {pred_product}.")
-                else:
-                    talking_points.append(f"  {i}. Your asset profile indicates {pred_product} would be an excellent fit for your portfolio.")
-            
-            elif feat.startswith('wc_assetmix_'):
-                asset_type = feat.replace('wc_assetmix_', '').replace('_', ' ')
-                if val > 0:
-                    talking_points.append(f"  {i}. Your {asset_type} allocation of ${val:,.0f} shows a portfolio structure that supports {pred_product}.")
-                else:
-                    talking_points.append(f"  {i}. Your asset mix profile suggests {pred_product} would complement your portfolio.")
-            
-            elif 'aum' in feat.lower() or 'asset' in feat.lower():
-                talking_points.append(f"  {i}. Your asset profile indicates {pred_product} would be an excellent fit for your portfolio.")
-            
-            elif 'channel' in feat.lower():
-                talking_points.append(f"  {i}. Clients in your channel typically benefit from {pred_product}.")
-            
-            elif 'season' in feat.lower():
-                season_map = {'Q1': 'Q1 (Jan-Mar)', 'Q2': 'Q2 (Apr-Jun)', 'Q3': 'Q3 (Jul-Sep)', 'Q4': 'Q4 (Oct-Dec)'}
-                season_name = season_map.get(str(val), str(val))
-                talking_points.append(f"  {i}. Your policy timing ({season_name}) indicates a strategic approach that aligns with {pred_product}.")
-            
-            elif feat.endswith('_idx'):
-                # Skip index features in talking points (they're not meaningful to clients)
-                continue
-            
-            else:
-                talking_points.append(f"  {i}. Your {feat.replace('_', ' ')} profile strongly supports {pred_product}.")
-    
-    # Address potential concerns (negative contributors)
-    if top_negative:
-        talking_points.append("\nConsiderations:")
-        for contrib in top_negative:
-            feat = contrib['feature']
-            # Only mention if it's a significant concern
-            if abs(contrib['shap_value']) > 0.1:
-                if 'age' in feat.lower():
-                    talking_points.append(f"  - While age is a factor, {pred_product} still offers significant value for your situation.")
-                elif 'allocation' in feat.lower() or 'asset' in feat.lower():
-                    talking_points.append(f"  - Your current asset allocation is considered, and {pred_product} still presents a strong opportunity.")
-                elif feat.endswith('_idx'):
-                    # Skip index features in considerations
-                    continue
-                else:
-                    talking_points.append(f"  - While {feat.replace('_', ' ')} is a consideration, {pred_product} still offers significant value for your situation.")
-    
-    # Add call to action
-    talking_points.append(f"\nNext Steps: Let's schedule a consultation to discuss how {pred_product} can help you achieve your financial goals.")
-    
-    talking_points_list.append({
+    # Create row for df_explanations
+    row = {
         'cont_id': client_id,
-        'predicted_product': pred_product,
-        'confidence': f"{pred_prob*100:.1f}%",
-        'talking_points': '\n'.join(talking_points),
-        'top_positive_features': ', '.join([f['feature'] for f in top_positive[:3]]),
-        'top_negative_features': ', '.join([f['feature'] for f in top_negative[:2]])
-    })
+        'axa_party_id': client_demo.get('axa_party_id', 'N/A') if client_demo is not None else 'N/A',
+        'product': pred_product,
+        'score': pred_prob,
+        'pred_class_id': pred_class
+    }
+    
+    # Add top 5 features
+    for rank in range(1, 6):
+        if rank <= len(top_features):
+            feat_info = top_features[rank - 1]
+            row[f'top_feature_{rank}'] = feat_info['feature']
+            row[f'top_feature_{rank}_value'] = feat_info['feature_value']
+            row[f'top_feature_{rank}_shap'] = feat_info['shap_value']
+        else:
+            row[f'top_feature_{rank}'] = None
+            row[f'top_feature_{rank}_value'] = None
+            row[f'top_feature_{rank}_shap'] = None
+    
+    # Add additional context fields from client_demo if available (only numeric or simple string types)
+    if client_demo is not None:
+        for field in ['psn_age', 'wc_total_assets', 'acct_val_amt', 'wc_assetmix_stocks', 
+                      'channel', 'aum_band', 'client_tenure', 'client_seg', 'client_seg_1']:
+            if field in client_demo:
+                val = client_demo[field]
+                # Convert to appropriate type to avoid Arrow conversion issues
+                if pd.notna(val):
+                    if field in ['psn_age', 'wc_total_assets', 'acct_val_amt', 'wc_assetmix_stocks', 'client_tenure']:
+                        try:
+                            row[field] = float(val) if val != '' else None
+                        except:
+                            row[field] = None
+                    else:
+                        # For categorical fields, keep as string but ensure it's a simple string
+                        row[field] = str(val) if val is not None else None
+                else:
+                    row[field] = None
+    
+    df_explanations_list.append(row)
 
-# Create talking points DataFrame
-talking_points_df = pd.DataFrame(talking_points_list)
+df_explanations = pd.DataFrame(df_explanations_list)
 
-print(f"\nGenerated talking points for {len(talking_points_df)} clients")
-print("\nSample talking points for first client:")
-print("-" * 60)
-print(talking_points_df.iloc[0]['talking_points'])
-print("-" * 60)
+# Enhanced talking point templates with context and actions
+ENHANCED_TEMPLATES = {
+    'acct_val_amt': {
+        'base': 'Account value of ${value:,.0f}',
+        'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
+        'action': 'Discuss portfolio diversification'
+    },
+    'wc_total_assets': {
+        'base': 'Total assets of ${value:,.0f}',
+        'context': lambda v: 'high net worth client' if v > 100000 else 'substantial assets',
+        'action': 'Explore comprehensive wealth planning'
+    },
+    'aum_segment': {
+        'base': 'AUM tier: {value}',
+        'context': lambda v: 'premium client segment' if v == 'HIGH' else 'core client segment',
+        'action': lambda v: 'White-glove service approach' if v == 'HIGH' else 'Standard advisory approach'
+    },
+    'wc_assetmix_stocks': {
+        'base': 'Stock allocation: ${value:,.0f}',
+        'context': 'equity-focused portfolio',
+        'action': 'Position growth products'
+    },
+    'aggressive_investor': {
+        'base': 'Aggressive risk profile',
+        'context': 'high-growth orientation',
+        'action': 'Emphasize equity and growth opportunities'
+    },
+    'conservative_investor': {
+        'base': 'Conservative risk profile',
+        'context': 'capital preservation focus',
+        'action': 'Highlight stability and guaranteed products'
+    },
+    'client_age': {
+        'base': 'Age {value:.0f}',
+        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+    },
+    'psn_age': {
+        'base': 'Age {value:.0f}',
+        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+    },
+    'retirement_planning_trigger': {
+        'base': 'Retirement planning phase',
+        'context': 'active retirement preparation',
+        'action': 'Lead with retirement income solutions'
+    },
+    'snp_close_lead_6': {
+        'base': 'S&P 6-month trend: {value:+.1f}%',
+        'context': lambda v: 'positive market momentum' if v > 0 else 'market correction opportunity',
+        'action': lambda v: 'Act on current strength' if v > 0 else 'Position for recovery'
+    },
+    'channel': {
+        'base': 'Channel: {value}',
+        'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
+        'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
+    },
+    'channel_idx': {
+        'base': 'Channel: {value}',
+        'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
+        'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
+    },
+    'client_tenure_years': {
+        'base': '{value:.0f} years with us',
+        'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
+        'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
+    },
+    'client_tenure': {
+        'base': '{value:.1f} years with us',
+        'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
+        'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
+    },
+    'hist_': {
+        'base': 'Recent purchase history: {value}',
+        'context': 'strong engagement pattern',
+        'action': 'Build on existing relationship'
+    },
+    'last_1': {
+        'base': 'Most recent product: {value}',
+        'context': 'active client engagement',
+        'action': 'Natural product progression'
+    },
+    'last_2': {
+        'base': 'Previous product: {value}',
+        'context': 'diverse product portfolio',
+        'action': 'Complement existing holdings'
+    },
+    'freq_': {
+        'base': 'Purchase frequency: {value}',
+        'context': 'consistent engagement',
+        'action': 'Leverage loyalty'
+    },
+    'wc_assetmix_annuity': {
+        'base': 'Annuity allocation: ${value:,.0f}',
+        'context': 'income-focused strategy',
+        'action': 'Expand retirement income solutions'
+    },
+    'face_amt': {
+        'base': 'Face amount: ${value:,.0f}',
+        'context': 'significant coverage',
+        'action': 'Review coverage adequacy'
+    },
+    'cash_val_amt': {
+        'base': 'Cash value: ${value:,.0f}',
+        'context': 'accumulated value',
+        'action': 'Optimize cash value growth'
+    },
+    'branchoffice_code': {
+        'base': 'Branch office: {value}',
+        'context': 'local market presence',
+        'action': 'Leverage local expertise'
+    },
+    'agent_segment': {
+        'base': 'Agent segment: {value}',
+        'context': 'specialized advisory',
+        'action': 'Align with segment expertise'
+    },
+    'client_seg': {
+        'base': 'Client segment: {value}',
+        'context': 'targeted service tier',
+        'action': 'Customize approach to segment'
+    },
+    'client_seg_1': {
+        'base': 'Client segment level 1: {value}',
+        'context': 'refined segmentation',
+        'action': 'Tailor recommendations'
+    },
+    # New features from cell 4
+    'first_acct_val_amt': {
+        'base': 'First policy account value: ${value:,.0f}',
+        'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
+        'action': 'Discuss portfolio diversification'
+    },
+    'first_face_amt': {
+        'base': 'First policy face amount: ${value:,.0f}',
+        'context': 'significant coverage',
+        'action': 'Review coverage adequacy'
+    },
+    'first_cash_val_amt': {
+        'base': 'First policy cash value: ${value:,.0f}',
+        'context': 'accumulated value',
+        'action': 'Optimize cash value growth'
+    },
+    'stock_allocation_ratio': {
+        'base': 'Stock allocation: {value:.1%}',
+        'context': 'equity-focused portfolio',
+        'action': 'Position growth products'
+    },
+    'bond_allocation_ratio': {
+        'base': 'Bond allocation: {value:.1%}',
+        'context': 'fixed-income focus',
+        'action': 'Balance with growth opportunities'
+    },
+    'annuity_allocation_ratio': {
+        'base': 'Annuity allocation: {value:.1%}',
+        'context': 'income-focused strategy',
+        'action': 'Expand retirement income solutions'
+    },
+    'mutual_fund_allocation_ratio': {
+        'base': 'Mutual fund allocation: {value:.1%}',
+        'context': 'diversified investment approach',
+        'action': 'Explore additional diversification'
+    },
+    'age_at_first_policy': {
+        'base': 'Age at first policy: {value:.0f}',
+        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+    },
+    'years_to_second_policy': {
+        'base': lambda v: 'First policy client' if v == 0 or v == 0.0 else f'Time to second policy: {v:.1f} years',
+        'context': lambda v: 'new client opportunity' if v == 0 or v == 0.0 else ('active engagement' if v < 3 else 'strategic planning' if v < 10 else 'long-term relationship'),
+        'action': lambda v: 'Build initial relationship' if v == 0 or v == 0.0 else ('Build on engagement momentum' if v < 3 else 'Deepen relationship')
+    },
+    'season_of_first_policy': {
+        'base': 'First policy season: {value}',
+        'context': 'strategic timing',
+        'action': 'Leverage planning cycles'
+    },
+    'first_product_category': {
+        'base': 'First product: {value}',
+        'context': 'current portfolio foundation',
+        'action': 'Build on existing relationship'
+    },
+    'wc_assetmix_bonds': {
+        'base': 'Bond allocation: ${value:,.0f}',
+        'context': 'fixed-income focus',
+        'action': 'Balance with growth opportunities'
+    },
+    'wc_assetmix_mutual_funds': {
+        'base': 'Mutual fund allocation: ${value:,.0f}',
+        'context': 'diversified investment approach',
+        'action': 'Explore additional diversification'
+    },
+    'wc_assetmix_deposits': {
+        'base': 'Deposit allocation: ${value:,.0f}',
+        'context': 'liquidity preference',
+        'action': 'Optimize cash deployment'
+    },
+    'wc_assetmix_other_assets': {
+        'base': 'Other assets: ${value:,.0f}',
+        'context': 'diversified portfolio',
+        'action': 'Comprehensive wealth planning'
+    }
+}
 
-# ------------- 3) Summary Statistics by Predicted Product -------------
-print("\n" + "=" * 60)
-print("PREDICTION SUMMARY BY PRODUCT")
-print("=" * 60)
-
-pred_summary = final_predictions.groupby('pred_product').agg({
-    'cont_id': 'count',
-    'pred_prob': ['mean', 'min', 'max']
-}).round(3)
-pred_summary.columns = ['Count', 'Avg_Confidence', 'Min_Confidence', 'Max_Confidence']
-pred_summary = pred_summary.sort_values('Count', ascending=False)
-print("\nPredictions by Product:")
-display(pred_summary)
-
-# ------------- 4) Feature Importance by Predicted Product -------------
-print("\n" + "=" * 60)
-print("FEATURE IMPORTANCE BY PREDICTED PRODUCT")
-print("=" * 60)
-
-for product in final_predictions['pred_product'].unique():
-    product_mask = pred_pd['pred_product'] == product
-    if product_mask.sum() > 0:
-        # Get indices in pred_pd for this product
-        product_pred_indices = pred_pd[product_mask].index[:min(50, product_mask.sum())]
-        
-        # Map to shap_pred_data indices (only include those in our SHAP sample)
-        shap_pred_indices_list = shap_pred_indices.tolist() if hasattr(shap_pred_indices, 'tolist') else list(shap_pred_indices)
-        product_shap_indices = []
-        for pred_idx in product_pred_indices:
+def generate_enhanced_talking_point(feature_name, feature_value, shap_value, id2prod=None):
+    """Generate enhanced talking point with context and action"""
+    # Impact indicator
+    impact = "🔥" if abs(shap_value) > 0.1 else "⭐" if abs(shap_value) > 0.05 else ""
+    
+    # Handle special cases for index features (map to actual values if possible)
+    if feature_name.endswith('_idx'):
+        # Try to map index to actual categorical value
+        base_feat = feature_name.replace('_idx', '')
+        # For product category, try to get actual product name
+        if base_feat == 'first_product_category' and id2prod is not None:
             try:
-                shap_idx = shap_pred_indices_list.index(pred_idx)
-                product_shap_indices.append(shap_idx)
-            except ValueError:
-                continue  # Skip if not in SHAP sample
+                prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
+                if prod_id > 0 and prod_id in id2prod:
+                    feature_value = id2prod[prod_id]
+                    feature_name = 'first_product_category'  # Use base name for template lookup
+                else:
+                    return None  # Skip if can't map
+            except:
+                return None  # Skip if conversion fails
+        else:
+            # For other index features, skip (not meaningful to clients)
+            return None
+    
+    # Handle special cases for old sequence features (no longer in feature set, but keep for backward compatibility)
+    if feature_name.startswith('hist_'):
+        # Try to map to product name
+        if id2prod is not None:
+            try:
+                prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
+                if prod_id > 0 and prod_id in id2prod:
+                    feature_value = id2prod[prod_id]
+                elif prod_id == 0:
+                    return None  # Skip zero/empty history
+            except:
+                pass
+        template_dict = ENHANCED_TEMPLATES.get('hist_', None)
+    elif feature_name.startswith('freq_'):
+        # Skip zero frequencies
+        try:
+            freq_val = float(feature_value) if feature_value not in [None, ''] else 0
+            if freq_val == 0:
+                return None
+        except:
+            pass
+        template_dict = ENHANCED_TEMPLATES.get('freq_', None)
+    elif feature_name in ['last_1', 'last_2']:
+        # Try to map product ID to name
+        if id2prod is not None:
+            try:
+                prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
+                if prod_id > 0 and prod_id in id2prod:
+                    feature_value = id2prod[prod_id]
+                elif prod_id == 0:
+                    return None  # Skip zero/empty
+            except:
+                pass
+        template_dict = ENHANCED_TEMPLATES.get(feature_name, None)
+    else:
+        # Find matching template
+        template_dict = None
+        for template_key in ENHANCED_TEMPLATES:
+            if template_key in feature_name or feature_name.startswith(template_key):
+                template_dict = ENHANCED_TEMPLATES[template_key]
+                break
+    
+    if not template_dict:
+        # Skip index features and other non-meaningful features
+        if feature_name.endswith('_idx') or feature_name in ['seq_len', 'unique_prior', 'num_switches']:
+            return None
+        # Fallback to simple format
+        return f"{impact} {feature_name}: {feature_value} (impact: {shap_value:+.3f})"
+    
+    # Format base message
+    try:
+        template = template_dict['base']
         
-        if len(product_shap_indices) > 0:
-            # Get SHAP values for this product's predicted class
-            product_pred_class = pred_pd.iloc[product_pred_indices[0]]['pred_class_id']
-            # Ensure product_pred_class is within valid range
-            if product_pred_class >= len(shap_values_pred):
-                product_pred_class = len(shap_values_pred) - 1
+        # Handle None, NaN, or empty values
+        if feature_value is None or feature_value == '' or (isinstance(feature_value, float) and np.isnan(feature_value)):
+            return None
+        
+        # Convert to numeric if needed (for lambda functions and formatting)
+        original_value = feature_value
+        if isinstance(feature_value, str) and feature_value not in ['N/A', 'UNKNOWN']:
+            try:
+                feature_value = float(feature_value)
+            except:
+                # Keep as string if conversion fails
+                pass
+        
+        # Check if template is a callable (lambda function)
+        if callable(template):
+            message = template(feature_value)
+        elif '{value' in template:
+            # String template with format placeholders
+            message = template.format(value=feature_value)
+        else:
+            # Plain string template
+            message = template
+    except Exception as e:
+        # If formatting fails, skip this feature
+        return None
+    
+    # Add context
+    context = template_dict.get('context')
+    if context:
+        if callable(context):
+            try:
+                context_str = context(feature_value)
+            except:
+                context_str = None
+        else:
+            context_str = context
+        
+        if context_str:
+            message += f" ({context_str})"
+    
+    # Add action
+    action = template_dict.get('action')
+    if action:
+        if callable(action):
+            try:
+                action_str = action(feature_value)
+            except:
+                action_str = None
+        else:
+            action_str = action
+        
+        if action_str:
+            message += f" → {action_str}"
+    
+    return f"{impact} {message}"
+
+# Generate enhanced talking points and add as new columns
+if len(df_explanations) > 0:
+    for i in range(len(df_explanations)):
+        valid_talking_points = []
+        for rank in range(1, 6):
+            feature = df_explanations.iloc[i][f'top_feature_{rank}']
+            value = df_explanations.iloc[i][f'top_feature_{rank}_value']
+            shap_val = df_explanations.iloc[i][f'top_feature_{rank}_shap']
             
-            product_shap_vals = shap_values_pred[product_pred_class][product_shap_indices]
-            
-            # Calculate feature importance for this product
-            product_feat_importance = {}
-            for i, feat in enumerate(feature_cols_final):
-                product_feat_importance[feat] = np.mean(np.abs(product_shap_vals[:, i]))
-            
-            product_feat_sorted = sorted(product_feat_importance.items(), key=lambda x: x[1], reverse=True)
-            product_feat_df = pd.DataFrame(product_feat_sorted[:10], columns=['Feature', 'Importance'])
-            
-            print(f"\nTop 10 Features for {product} predictions:")
-            display(product_feat_df)
+            if pd.notna(feature) and pd.notna(shap_val):
+                enhanced_tp = generate_enhanced_talking_point(feature, value, shap_val, id2prod)
+                if enhanced_tp is not None:  # Only add non-None talking points
+                    valid_talking_points.append(enhanced_tp)
+                    df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = enhanced_tp
+                else:
+                    df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = None
+            else:
+                df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = None
+        
+        # If we have fewer than 5 valid talking points, pad with None
+        for rank in range(len(valid_talking_points) + 1, 6):
+            if f'enhanced_talking_point_{rank}' not in df_explanations.columns:
+                df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = None
+    
+    print(f"Generated enhanced talking points for {len(df_explanations):,} records")
+    
+    # Show sample
+    print("\n📋 Sample Enhanced Explanation:")
+    print("=" * 80)
+    if len(df_explanations) > 0:
+        sample = df_explanations.iloc[0]
+        print(f"Client: {sample.get('axa_party_id', sample.get('cont_id', 'N/A'))}")
+        print(f"Product: {sample['product'].title()}")
+        print(f"Score: {sample['score']:.3f}")
+        print(f"\nTop Reasons (Enhanced):")
+        for i in range(1, 6):
+            tp = sample.get(f'enhanced_talking_point_{i}')
+            if pd.notna(tp):
+                print(f"{i}. {tp}")
+    else:
+        print("No samples available")
+else:
+    print("\nWARNING: No explanations to enhance")
 
-# ------------- 5) Create Final Output with Talking Points -------------
-print("\n" + "=" * 60)
-print("FINAL OUTPUT: PREDICTIONS WITH TALKING POINTS")
-print("=" * 60)
+print("\nEnhanced talking points complete")
+print("=" * 80)
 
-# Merge talking points with final predictions
-final_with_talking_points = final_predictions.merge(
-    talking_points_df[['cont_id', 'talking_points', 'top_positive_features', 'top_negative_features']],
-    left_on='cont_id',
-    right_on='cont_id',
-    how='left'
-)
+# Display sample of df_explanations
+print("\n📊 Sample df_explanations DataFrame:")
+# Convert problematic string columns to ensure Arrow compatibility
+df_explanations_display = df_explanations.copy()
 
-# Reorder columns
-output_cols = [
-    'cont_id', 'axa_party_id', 'predicted_product', 'pred_product', 'pred_prob',
-    'confidence', 'talking_points', 'top_positive_features', 'top_negative_features',
-    'product_category', 'psn_age', 'client_seg', 'aum_band', 'channel', 
-    'division_name', 'branch_name', 'business_city', 'business_state_cod', 'client_tenure'
-] + [c for c in final_with_talking_points.columns if c.startswith('prob_')]
+# Clean up the display DataFrame - convert object columns to proper types
+for col in df_explanations_display.columns:
+    if df_explanations_display[col].dtype == 'object':
+        # For string columns, replace NaN/None with empty string for display
+        df_explanations_display[col] = df_explanations_display[col].fillna('').astype(str)
+        df_explanations_display[col] = df_explanations_display[col].replace('nan', '').replace('None', '')
 
-# Select available columns
-available_cols = [c for c in output_cols if c in final_with_talking_points.columns]
-final_with_talking_points = final_with_talking_points[available_cols]
+display(df_explanations_display.head(5))
 
-# Rename for clarity
-final_with_talking_points = final_with_talking_points.rename(columns={
-    'pred_product': 'recommended_product',
-    'pred_prob': 'recommendation_confidence'
-})
-
-print(f"\nFinal output shape: {final_with_talking_points.shape}")
-print("\nSample output (first 3 rows):")
-display(final_with_talking_points.head(3))
-
-# Save to variable for easy access
-agent_pitch_data = final_with_talking_points.copy()
-
-# ------------- 6) Create Agent Summary Report -------------
-print("\n" + "=" * 60)
-print("AGENT SUMMARY REPORT")
-print("=" * 60)
-
-# Summary by product
-product_summary = agent_pitch_data.groupby('recommended_product').agg({
-    'cont_id': 'count',
-    'recommendation_confidence': ['mean', 'min', 'max']
-}).round(3)
-product_summary.columns = ['Client_Count', 'Avg_Confidence', 'Min_Confidence', 'Max_Confidence']
-product_summary = product_summary.sort_values('Client_Count', ascending=False)
-
-print("\n📊 Recommendations Summary by Product:")
-display(product_summary)
-
-# High confidence recommendations (>70%)
-high_confidence = agent_pitch_data[agent_pitch_data['recommendation_confidence'] > 0.7]
-print(f"\n🎯 High Confidence Recommendations (>70%): {len(high_confidence)} clients")
-if len(high_confidence) > 0:
-    print("\nTop 5 High Confidence Clients:")
-    high_conf_display = high_confidence[['cont_id', 'recommended_product', 'recommendation_confidence']].head(5)
-    display(high_conf_display)
-
-# Recommendations by client segment
-if 'client_seg' in agent_pitch_data.columns:
-    seg_summary = agent_pitch_data.groupby(['client_seg', 'recommended_product']).size().reset_index(name='count')
-    seg_summary = seg_summary.sort_values('count', ascending=False)
-    print("\n👥 Recommendations by Client Segment:")
-    display(seg_summary.head(10))
-
-# Recommendations by age group
-if 'psn_age' in agent_pitch_data.columns:
-    agent_pitch_data['age_group'] = pd.cut(
-        agent_pitch_data['psn_age'], 
-        bins=[0, 35, 50, 65, 100], 
-        labels=['<35', '35-50', '50-65', '65+']
-    )
-    age_summary = agent_pitch_data.groupby(['age_group', 'recommended_product']).size().reset_index(name='count')
-    age_summary = age_summary.sort_values('count', ascending=False)
-    print("\n👤 Recommendations by Age Group:")
-    display(age_summary)
-
-print("\n" + "=" * 60)
-print("ANALYSIS COMPLETE!")
-print("=" * 60)
-print(f"\n✅ Use 'agent_pitch_data' DataFrame to access predictions with talking points.")
-print(f"📋 Total clients with recommendations: {len(agent_pitch_data)}")
-print(f"📦 Products recommended: {agent_pitch_data['recommended_product'].nunique()}")
-print(f"📈 Average confidence: {agent_pitch_data['recommendation_confidence'].mean()*100:.1f}%")
-print(f"\n💡 Each row in 'agent_pitch_data' contains:")
-print("   - Client information (cont_id, demographics)")
-print("   - Recommended product and confidence score")
-print("   - Personalized talking points based on SHAP analysis")
-print("   - Top contributing features for the recommendation")
+# Note: If you need to convert to Spark DataFrame, handle string columns carefully:
+# Option 1: Convert only specific columns that are safe
+# Option 2: Use verifySchema=False and let Spark infer types
+# Option 3: Explicitly define schema for problematic columns
+# Example:
+# from pyspark.sql.types import StringType, DoubleType, IntegerType
+# schema = StructType([
+#     StructField("cont_id", StringType(), True),
+#     StructField("aum_band", StringType(), True),  # Keep as string
+#     ...
+# ])
+# spark_df = spark.createDataFrame(df_explanations, schema=schema)
