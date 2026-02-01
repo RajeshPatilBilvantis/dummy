@@ -1,563 +1,483 @@
-# ============================================
-# ENHANCED TALKING POINTS GENERATION
-# ============================================
+"""
+Preprocessing Pipeline for Wealth Management Product Recommendation Model
+This module contains all preprocessing functions needed to transform raw client data
+into features suitable for the LightGBM product recommendation model.
+"""
 
-import pandas as pd
+from pyspark.sql import functions as F, Window
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
 import numpy as np
+import pandas as pd
+from collections import Counter
+from typing import Dict, List, Tuple, Optional
 
-print("💬 Generating Enhanced Talking Points...")
-print("=" * 80)
 
-# First, create df_explanations DataFrame from SHAP analysis results
-# This will contain top features, their values, and SHAP contributions for each client
+# ============================================================================
+# CONSTANTS
+# ============================================================================
 
-df_explanations_list = []
+MAX_SEQ_LEN = 10  # Maximum sequence length for history features
+MIN_EVENTS = 2    # Minimum number of events required for training examples
 
-for idx in range(len(shap_pred_data)):
-    actual_idx = shap_pred_indices[idx]
-    client_id = pred_pd.iloc[actual_idx]['cont_id']
-    pred_class = pred_pd.iloc[actual_idx]['pred_class_id']
-    pred_product = pred_pd.iloc[actual_idx]['pred_product']
-    pred_prob = pred_pd.iloc[actual_idx]['pred_prob']
+
+# ============================================================================
+# PRODUCT CATEGORY MAPPING
+# ============================================================================
+
+def create_product_category_column(df):
+    """
+    Create product_category column from prod_lob, sub_product_level_1, and sub_product_level_2.
     
-    # Get demographic data if available
-    client_demo = None
-    if idx < len(shap_final_preds):
-        client_demo = shap_final_preds.iloc[idx]
+    Args:
+        df: Spark DataFrame with prod_lob, sub_product_level_1, sub_product_level_2 columns
+        
+    Returns:
+        Spark DataFrame with product_category column added
+    """
+    return df.withColumn(
+        "product_category",
+        F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+        .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+        .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+        .when(F.col("sub_product_level_2").isin(
+            "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+            "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+            "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+        ), "LIFE_INSURANCE")
+        .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+        .when(F.col("sub_product_level_1").isin(
+            "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+            "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+        ), "RETIREMENT")
+        .when(
+            (F.col("sub_product_level_2").like("%403B%")) |
+            (F.col("sub_product_level_2").like("%401%")) |
+            (F.col("sub_product_level_2").like("%IRA%")) |
+            (F.col("sub_product_level_2").like("%SEP%")),
+            "RETIREMENT"
+        )
+        .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+        .when(F.col("sub_product_level_1").isin(
+            "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+            "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+            "ADVISORY", "CASH SOLICITOR"
+        ), "INVESTMENT")
+        .when(
+            (F.col("sub_product_level_2").like("%Investment%")) |
+            (F.col("sub_product_level_2").like("%Brokerage%")) |
+            (F.col("sub_product_level_2").like("%Advisory%")),
+            "INVESTMENT"
+        )
+        .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+        .when(
+            (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+            (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+            "NETWORK_PRODUCTS"
+        )
+        .when(
+            (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+            "DISABILITY"
+        )
+        .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+        .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+        .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+        .otherwise("OTHER")
+    )
+
+
+# ============================================================================
+# SEQUENCE PROCESSING
+# ============================================================================
+
+def dedupe_consecutive(seq):
+    """
+    Remove consecutive duplicate values from a sequence.
     
-    # Get SHAP values for the predicted class
-    if pred_class >= len(shap_values_pred):
-        pred_class = len(shap_values_pred) - 1
-    shap_vals = shap_values_pred[pred_class][idx]
+    Args:
+        seq: List of values
+        
+    Returns:
+        List with consecutive duplicates removed
+    """
+    if not seq:
+        return []
+    out = [seq[0]]
+    for x in seq[1:]:
+        if x != out[-1]:
+            out.append(x)
+    return out
+
+
+def pad_history(hist, max_len=MAX_SEQ_LEN):
+    """
+    Pad history sequence to fixed length.
     
-    # Get feature contributions
-    feature_contributions = []
-    for i, feat in enumerate(feature_cols_final):
-        contrib = shap_vals[i]
-        feat_val = shap_pred_data.iloc[idx][feat]
+    Args:
+        hist: List of history values
+        max_len: Maximum length to pad to
         
-        # Get actual feature value (try to get from client_demo if available for better context)
-        actual_value = feat_val
+    Returns:
+        Padded list of length max_len
+    """
+    arr = hist[-max_len:] if hist is not None else []
+    pad_len = max_len - len(arr)
+    return [0] * pad_len + arr
+
+
+# ============================================================================
+# FEATURE ENGINEERING
+# ============================================================================
+
+def extract_history_features(hist, num_classes):
+    """
+    Extract features from a history sequence.
+    
+    Args:
+        hist: List of product IDs in history
+        num_classes: Number of product classes
         
-        # Skip index features or map them to actual values
-        if feat.endswith('_idx'):
-            # Try to get the actual categorical value
-            base_feat = feat.replace('_idx', '')
-            if client_demo is not None and base_feat in client_demo:
-                actual_value = client_demo[base_feat]
-            else:
-                # Skip index features if we can't map them
-                continue
+    Returns:
+        Tuple of (seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+    """
+    seq_len = len(hist)
+    last_1 = hist[-1] if seq_len >= 1 else 0
+    last_2 = hist[-2] if seq_len >= 2 else 0
+    unique_prior = len(set(hist))
+    num_switches = sum(1 for i in range(1, seq_len) if hist[i] != hist[i-1])
+    freq = Counter(hist)
+    freq_features = [freq.get(i, 0) for i in range(1, num_classes + 1)]
+    return (seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+
+
+def hist_to_features_row(x, num_classes):
+    """
+    Convert history sequence to feature row (for training).
+    
+    Args:
+        x: Tuple of (cont_id, hist, label)
+        num_classes: Number of product classes
         
-        if client_demo is not None:
-            # Map feature names to actual column names (updated for new feature set from cell 4)
-            feat_mapping = {
-                'first_acct_val_amt': 'acct_val_amt',
-                'first_face_amt': 'face_amt',
-                'first_cash_val_amt': 'cash_val_amt',
-                'acct_val_amt': 'acct_val_amt',
-                'wc_total_assets': 'wc_total_assets',
-                'psn_age': 'psn_age',
-                'channel': 'channel',
-                'client_seg': 'client_seg',
-                'client_seg_1': 'client_seg_1',
-                'aum_band': 'aum_band',
-                'wc_assetmix_stocks': 'wc_assetmix_stocks',
-                'wc_assetmix_annuity': 'wc_assetmix_annuity',
-                'wc_assetmix_bonds': 'wc_assetmix_bonds',
-                'wc_assetmix_mutual_funds': 'wc_assetmix_mutual_funds',
-                'wc_assetmix_deposits': 'wc_assetmix_deposits',
-                'wc_assetmix_other_assets': 'wc_assetmix_other_assets',
-                'face_amt': 'face_amt',
-                'cash_val_amt': 'cash_val_amt',
-            }
+    Returns:
+        Tuple of feature values
+    """
+    cont_id, hist, label = x
+    seq_len, last_1, last_2, unique_prior, num_switches, freq_features = extract_history_features(hist, num_classes)
+    return (str(cont_id), hist, label, seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+
+
+def hist_to_features_row_pred(x, num_classes):
+    """
+    Convert history sequence to feature row (for prediction).
+    
+    Args:
+        x: Tuple of (cont_id, hist)
+        num_classes: Number of product classes
+        
+    Returns:
+        Tuple of feature values
+    """
+    cont_id, hist = x
+    seq_len, last_1, last_2, unique_prior, num_switches, freq_features = extract_history_features(hist, num_classes)
+    return (str(cont_id), hist, seq_len, last_1, last_2, unique_prior, num_switches, freq_features)
+
+
+# ============================================================================
+# CATEGORICAL ENCODING
+# ============================================================================
+
+def encode_categorical_features(df, categorical_cols, spark_context, categorical_mappings=None):
+    """
+    Encode categorical features to integer indices.
+    
+    Args:
+        df: Spark DataFrame
+        categorical_cols: List of categorical column names
+        spark_context: SparkContext for broadcasting
+        categorical_mappings: Optional dict of {col_name: {value: index}} mappings.
+                            If None, mappings will be created from data.
+        
+    Returns:
+        Tuple of (encoded_df, mappings_dict)
+    """
+    if categorical_mappings is None:
+        categorical_mappings = {}
+    
+    result_df = df
+    
+    for c in categorical_cols:
+        if c in categorical_mappings:
+            # Use provided mapping
+            mapping = categorical_mappings[c]
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                )
+            )
+        else:
+            # Create mapping from data
+            vals = [r[0] for r in result_df.select(c).distinct().collect()]
+            mapping = {v: i for i, v in enumerate(sorted([str(x) for x in vals]))}
+            categorical_mappings[c] = mapping
             
-            # Check if we can get a better value from client_demo
-            if feat in feat_mapping:
-                col_name = feat_mapping[feat]
-                if col_name in client_demo:
-                    try:
-                        demo_val = client_demo[col_name]
-                        if pd.notna(demo_val):
-                            actual_value = demo_val
-                    except:
-                        pass
-        
-        # Skip zero values for old frequency features (no longer in feature set, but keep for backward compatibility)
-        if feat.startswith('freq_') and (actual_value == 0 or actual_value == 0.0):
-            continue
-        
-        # Skip index features that can't be mapped to meaningful values
-        if feat.endswith('_idx') and (actual_value is None or actual_value == '' or (isinstance(actual_value, (int, float)) and actual_value == 0)):
-            # Only skip if we can't get a meaningful value from client_demo
-            base_feat = feat.replace('_idx', '')
-            if client_demo is None or base_feat not in client_demo:
-                continue
-        
-        feature_contributions.append({
-            'feature': feat,
-            'shap_value': contrib,
-            'feature_value': actual_value
-        })
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                )
+            )
     
-    # Sort by absolute SHAP value
-    feature_contributions.sort(key=lambda x: abs(x['shap_value']), reverse=True)
-    
-    # Get top 5 features
-    top_features = feature_contributions[:5]
-    
-    # Create row for df_explanations
-    row = {
-        'cont_id': client_id,
-        'axa_party_id': client_demo.get('axa_party_id', 'N/A') if client_demo is not None else 'N/A',
-        'product': pred_product,
-        'score': pred_prob,
-        'pred_class_id': pred_class
-    }
-    
-    # Add top 5 features
-    for rank in range(1, 6):
-        if rank <= len(top_features):
-            feat_info = top_features[rank - 1]
-            row[f'top_feature_{rank}'] = feat_info['feature']
-            row[f'top_feature_{rank}_value'] = feat_info['feature_value']
-            row[f'top_feature_{rank}_shap'] = feat_info['shap_value']
-        else:
-            row[f'top_feature_{rank}'] = None
-            row[f'top_feature_{rank}_value'] = None
-            row[f'top_feature_{rank}_shap'] = None
-    
-    # Add additional context fields from client_demo if available (only numeric or simple string types)
-    if client_demo is not None:
-        for field in ['psn_age', 'wc_total_assets', 'acct_val_amt', 'wc_assetmix_stocks', 
-                      'channel', 'aum_band', 'client_tenure', 'client_seg', 'client_seg_1']:
-            if field in client_demo:
-                val = client_demo[field]
-                # Convert to appropriate type to avoid Arrow conversion issues
-                if pd.notna(val):
-                    if field in ['psn_age', 'wc_total_assets', 'acct_val_amt', 'wc_assetmix_stocks', 'client_tenure']:
-                        try:
-                            row[field] = float(val) if val != '' else None
-                        except:
-                            row[field] = None
-                    else:
-                        # For categorical fields, keep as string but ensure it's a simple string
-                        row[field] = str(val) if val is not None else None
-                else:
-                    row[field] = None
-    
-    df_explanations_list.append(row)
+    return result_df, categorical_mappings
 
-df_explanations = pd.DataFrame(df_explanations_list)
 
-# Enhanced talking point templates with context and actions
-ENHANCED_TEMPLATES = {
-    'acct_val_amt': {
-        'base': 'Account value of ${value:,.0f}',
-        'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
-        'action': 'Discuss portfolio diversification'
-    },
-    'wc_total_assets': {
-        'base': 'Total assets of ${value:,.0f}',
-        'context': lambda v: 'high net worth client' if v > 100000 else 'substantial assets',
-        'action': 'Explore comprehensive wealth planning'
-    },
-    'aum_segment': {
-        'base': 'AUM tier: {value}',
-        'context': lambda v: 'premium client segment' if v == 'HIGH' else 'core client segment',
-        'action': lambda v: 'White-glove service approach' if v == 'HIGH' else 'Standard advisory approach'
-    },
-    'wc_assetmix_stocks': {
-        'base': 'Stock allocation: ${value:,.0f}',
-        'context': 'equity-focused portfolio',
-        'action': 'Position growth products'
-    },
-    'aggressive_investor': {
-        'base': 'Aggressive risk profile',
-        'context': 'high-growth orientation',
-        'action': 'Emphasize equity and growth opportunities'
-    },
-    'conservative_investor': {
-        'base': 'Conservative risk profile',
-        'context': 'capital preservation focus',
-        'action': 'Highlight stability and guaranteed products'
-    },
-    'client_age': {
-        'base': 'Age {value:.0f}',
-        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
-        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
-    },
-    'psn_age': {
-        'base': 'Age {value:.0f}',
-        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
-        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
-    },
-    'retirement_planning_trigger': {
-        'base': 'Retirement planning phase',
-        'context': 'active retirement preparation',
-        'action': 'Lead with retirement income solutions'
-    },
-    'snp_close_lead_6': {
-        'base': 'S&P 6-month trend: {value:+.1f}%',
-        'context': lambda v: 'positive market momentum' if v > 0 else 'market correction opportunity',
-        'action': lambda v: 'Act on current strength' if v > 0 else 'Position for recovery'
-    },
-    'channel': {
-        'base': 'Channel: {value}',
-        'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
-        'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
-    },
-    'channel_idx': {
-        'base': 'Channel: {value}',
-        'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
-        'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
-    },
-    'client_tenure_years': {
-        'base': '{value:.0f} years with us',
-        'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
-        'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
-    },
-    'client_tenure': {
-        'base': '{value:.1f} years with us',
-        'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
-        'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
-    },
-    'hist_': {
-        'base': 'Recent purchase history: {value}',
-        'context': 'strong engagement pattern',
-        'action': 'Build on existing relationship'
-    },
-    'last_1': {
-        'base': 'Most recent product: {value}',
-        'context': 'active client engagement',
-        'action': 'Natural product progression'
-    },
-    'last_2': {
-        'base': 'Previous product: {value}',
-        'context': 'diverse product portfolio',
-        'action': 'Complement existing holdings'
-    },
-    'freq_': {
-        'base': 'Purchase frequency: {value}',
-        'context': 'consistent engagement',
-        'action': 'Leverage loyalty'
-    },
-    'wc_assetmix_annuity': {
-        'base': 'Annuity allocation: ${value:,.0f}',
-        'context': 'income-focused strategy',
-        'action': 'Expand retirement income solutions'
-    },
-    'face_amt': {
-        'base': 'Face amount: ${value:,.0f}',
-        'context': 'significant coverage',
-        'action': 'Review coverage adequacy'
-    },
-    'cash_val_amt': {
-        'base': 'Cash value: ${value:,.0f}',
-        'context': 'accumulated value',
-        'action': 'Optimize cash value growth'
-    },
-    'branchoffice_code': {
-        'base': 'Branch office: {value}',
-        'context': 'local market presence',
-        'action': 'Leverage local expertise'
-    },
-    'agent_segment': {
-        'base': 'Agent segment: {value}',
-        'context': 'specialized advisory',
-        'action': 'Align with segment expertise'
-    },
-    'client_seg': {
-        'base': 'Client segment: {value}',
-        'context': 'targeted service tier',
-        'action': 'Customize approach to segment'
-    },
-    'client_seg_1': {
-        'base': 'Client segment level 1: {value}',
-        'context': 'refined segmentation',
-        'action': 'Tailor recommendations'
-    },
-    # New features from cell 4
-    'first_acct_val_amt': {
-        'base': 'First policy account value: ${value:,.0f}',
-        'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
-        'action': 'Discuss portfolio diversification'
-    },
-    'first_face_amt': {
-        'base': 'First policy face amount: ${value:,.0f}',
-        'context': 'significant coverage',
-        'action': 'Review coverage adequacy'
-    },
-    'first_cash_val_amt': {
-        'base': 'First policy cash value: ${value:,.0f}',
-        'context': 'accumulated value',
-        'action': 'Optimize cash value growth'
-    },
-    'stock_allocation_ratio': {
-        'base': 'Stock allocation: {value:.1%}',
-        'context': 'equity-focused portfolio',
-        'action': 'Position growth products'
-    },
-    'bond_allocation_ratio': {
-        'base': 'Bond allocation: {value:.1%}',
-        'context': 'fixed-income focus',
-        'action': 'Balance with growth opportunities'
-    },
-    'annuity_allocation_ratio': {
-        'base': 'Annuity allocation: {value:.1%}',
-        'context': 'income-focused strategy',
-        'action': 'Expand retirement income solutions'
-    },
-    'mutual_fund_allocation_ratio': {
-        'base': 'Mutual fund allocation: {value:.1%}',
-        'context': 'diversified investment approach',
-        'action': 'Explore additional diversification'
-    },
-    'age_at_first_policy': {
-        'base': 'Age at first policy: {value:.0f}',
-        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
-        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
-    },
-    'years_to_second_policy': {
-        'base': lambda v: 'First policy client' if v == 0 or v == 0.0 else f'Time to second policy: {v:.1f} years',
-        'context': lambda v: 'new client opportunity' if v == 0 or v == 0.0 else ('active engagement' if v < 3 else 'strategic planning' if v < 10 else 'long-term relationship'),
-        'action': lambda v: 'Build initial relationship' if v == 0 or v == 0.0 else ('Build on engagement momentum' if v < 3 else 'Deepen relationship')
-    },
-    'season_of_first_policy': {
-        'base': 'First policy season: {value}',
-        'context': 'strategic timing',
-        'action': 'Leverage planning cycles'
-    },
-    'first_product_category': {
-        'base': 'First product: {value}',
-        'context': 'current portfolio foundation',
-        'action': 'Build on existing relationship'
-    },
-    'wc_assetmix_bonds': {
-        'base': 'Bond allocation: ${value:,.0f}',
-        'context': 'fixed-income focus',
-        'action': 'Balance with growth opportunities'
-    },
-    'wc_assetmix_mutual_funds': {
-        'base': 'Mutual fund allocation: ${value:,.0f}',
-        'context': 'diversified investment approach',
-        'action': 'Explore additional diversification'
-    },
-    'wc_assetmix_deposits': {
-        'base': 'Deposit allocation: ${value:,.0f}',
-        'context': 'liquidity preference',
-        'action': 'Optimize cash deployment'
-    },
-    'wc_assetmix_other_assets': {
-        'base': 'Other assets: ${value:,.0f}',
-        'context': 'diversified portfolio',
-        'action': 'Comprehensive wealth planning'
-    }
-}
+# ============================================================================
+# MISSING VALUE IMPUTATION
+# ============================================================================
 
-def generate_enhanced_talking_point(feature_name, feature_value, shap_value, id2prod=None):
-    """Generate enhanced talking point with context and action"""
-    # Impact indicator
-    impact = "🔥" if abs(shap_value) > 0.1 else "⭐" if abs(shap_value) > 0.05 else ""
+def impute_missing_values(df, categorical_cols, numeric_fill=0, categorical_mode="UNKNOWN"):
+    """
+    Impute missing values in DataFrame.
     
-    # Handle special cases for index features (map to actual values if possible)
-    if feature_name.endswith('_idx'):
-        # Try to map index to actual categorical value
-        base_feat = feature_name.replace('_idx', '')
-        # For product category, try to get actual product name
-        if base_feat == 'first_product_category' and id2prod is not None:
-            try:
-                prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
-                if prod_id > 0 and prod_id in id2prod:
-                    feature_value = id2prod[prod_id]
-                    feature_name = 'first_product_category'  # Use base name for template lookup
-                else:
-                    return None  # Skip if can't map
-            except:
-                return None  # Skip if conversion fails
-        else:
-            # For other index features, skip (not meaningful to clients)
-            return None
-    
-    # Handle special cases for old sequence features (no longer in feature set, but keep for backward compatibility)
-    if feature_name.startswith('hist_'):
-        # Try to map to product name
-        if id2prod is not None:
-            try:
-                prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
-                if prod_id > 0 and prod_id in id2prod:
-                    feature_value = id2prod[prod_id]
-                elif prod_id == 0:
-                    return None  # Skip zero/empty history
-            except:
-                pass
-        template_dict = ENHANCED_TEMPLATES.get('hist_', None)
-    elif feature_name.startswith('freq_'):
-        # Skip zero frequencies
-        try:
-            freq_val = float(feature_value) if feature_value not in [None, ''] else 0
-            if freq_val == 0:
-                return None
-        except:
-            pass
-        template_dict = ENHANCED_TEMPLATES.get('freq_', None)
-    elif feature_name in ['last_1', 'last_2']:
-        # Try to map product ID to name
-        if id2prod is not None:
-            try:
-                prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
-                if prod_id > 0 and prod_id in id2prod:
-                    feature_value = id2prod[prod_id]
-                elif prod_id == 0:
-                    return None  # Skip zero/empty
-            except:
-                pass
-        template_dict = ENHANCED_TEMPLATES.get(feature_name, None)
-    else:
-        # Find matching template
-        template_dict = None
-        for template_key in ENHANCED_TEMPLATES:
-            if template_key in feature_name or feature_name.startswith(template_key):
-                template_dict = ENHANCED_TEMPLATES[template_key]
-                break
-    
-    if not template_dict:
-        # Skip index features and other non-meaningful features
-        if feature_name.endswith('_idx') or feature_name in ['seq_len', 'unique_prior', 'num_switches']:
-            return None
-        # Fallback to simple format
-        return f"{impact} {feature_name}: {feature_value} (impact: {shap_value:+.3f})"
-    
-    # Format base message
-    try:
-        template = template_dict['base']
+    Args:
+        df: Spark DataFrame
+        categorical_cols: List of categorical column names
+        numeric_fill: Value to fill numeric nulls (default: 0)
+        categorical_mode: Value to fill categorical nulls (default: "UNKNOWN")
         
-        # Handle None, NaN, or empty values
-        if feature_value is None or feature_value == '' or (isinstance(feature_value, float) and np.isnan(feature_value)):
-            return None
-        
-        # Convert to numeric if needed (for lambda functions and formatting)
-        original_value = feature_value
-        if isinstance(feature_value, str) and feature_value not in ['N/A', 'UNKNOWN']:
-            try:
-                feature_value = float(feature_value)
-            except:
-                # Keep as string if conversion fails
-                pass
-        
-        # Check if template is a callable (lambda function)
-        if callable(template):
-            message = template(feature_value)
-        elif '{value' in template:
-            # String template with format placeholders
-            message = template.format(value=feature_value)
-        else:
-            # Plain string template
-            message = template
-    except Exception as e:
-        # If formatting fails, skip this feature
-        return None
+    Returns:
+        Spark DataFrame with imputed values
+    """
+    # Get numeric columns (excluding special columns)
+    numeric_cols = [
+        c for c, t in df.dtypes 
+        if t in ("int", "double", "bigint", "float") 
+        and c not in ("label", "seq_len", "last_1", "last_2", "unique_prior", "num_switches")
+    ]
     
-    # Add context
-    context = template_dict.get('context')
-    if context:
-        if callable(context):
-            try:
-                context_str = context(feature_value)
-            except:
-                context_str = None
-        else:
-            context_str = context
-        
-        if context_str:
-            message += f" ({context_str})"
+    # Fill numeric nulls
+    fill_dict = {c: numeric_fill for c in numeric_cols}
+    result_df = df.fillna(fill_dict)
     
-    # Add action
-    action = template_dict.get('action')
-    if action:
-        if callable(action):
+    # Fill categorical nulls with mode
+    for c in categorical_cols:
+        if c in result_df.columns:
             try:
-                action_str = action(feature_value)
+                mode_val = result_df.groupBy(c).count().orderBy(F.desc("count")).first()
+                mode_val = mode_val[0] if mode_val and mode_val[0] is not None else categorical_mode
             except:
-                action_str = None
-        else:
-            action_str = action
-        
-        if action_str:
-            message += f" → {action_str}"
-    
-    return f"{impact} {message}"
-
-# Generate enhanced talking points and add as new columns
-if len(df_explanations) > 0:
-    for i in range(len(df_explanations)):
-        valid_talking_points = []
-        for rank in range(1, 6):
-            feature = df_explanations.iloc[i][f'top_feature_{rank}']
-            value = df_explanations.iloc[i][f'top_feature_{rank}_value']
-            shap_val = df_explanations.iloc[i][f'top_feature_{rank}_shap']
+                mode_val = categorical_mode
             
-            if pd.notna(feature) and pd.notna(shap_val):
-                enhanced_tp = generate_enhanced_talking_point(feature, value, shap_val, id2prod)
-                if enhanced_tp is not None:  # Only add non-None talking points
-                    valid_talking_points.append(enhanced_tp)
-                    df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = enhanced_tp
-                else:
-                    df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = None
-            else:
-                df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = None
+            result_df = result_df.withColumn(
+                c,
+                F.when(F.col(c).isNull(), F.lit(mode_val)).otherwise(F.col(c))
+            )
+    
+    return result_df
+
+
+# ============================================================================
+# MAIN PREPROCESSING FUNCTION FOR PREDICTION
+# ============================================================================
+
+def preprocess_for_prediction(
+    spark,
+    df_raw,
+    prod2id: Dict[str, int],
+    num_classes: int,
+    max_seq_len: int = MAX_SEQ_LEN,
+    categorical_cols: Optional[List[str]] = None,
+    categorical_mappings: Optional[Dict] = None,
+    branchoffice_code: Optional[str] = None,
+    business_month: Optional[int] = None
+):
+    """
+    Preprocess raw data for prediction.
+    
+    Args:
+        spark: SparkSession
+        df_raw: Raw Spark DataFrame with client metrics
+        prod2id: Dictionary mapping product categories to IDs
+        num_classes: Number of product classes
+        max_seq_len: Maximum sequence length (default: MAX_SEQ_LEN)
+        categorical_cols: List of categorical column names
+        categorical_mappings: Optional dict of categorical mappings
+        branchoffice_code: Optional branch office code filter
+        business_month: Optional business month filter
         
-        # If we have fewer than 5 valid talking points, pad with None
-        for rank in range(len(valid_talking_points) + 1, 6):
-            if f'enhanced_talking_point_{rank}' not in df_explanations.columns:
-                df_explanations.loc[i, f'enhanced_talking_point_{rank}'] = None
+    Returns:
+        Tuple of (preprocessed_pandas_df, feature_columns_list)
+    """
+    if categorical_cols is None:
+        categorical_cols = ["client_seg", "client_seg_1", "aum_band", "channel", "agent_segment", "branchoffice_code"]
     
-    print(f"Generated enhanced talking points for {len(df_explanations):,} records")
+    # Step 1: Create product category column
+    df = create_product_category_column(df_raw)
     
-    # Show sample
-    print("\n📋 Sample Enhanced Explanation:")
-    print("=" * 80)
-    if len(df_explanations) > 0:
-        sample = df_explanations.iloc[0]
-        print(f"Client: {sample.get('axa_party_id', sample.get('cont_id', 'N/A'))}")
-        print(f"Product: {sample['product'].title()}")
-        print(f"Score: {sample['score']:.3f}")
-        print(f"\nTop Reasons (Enhanced):")
-        for i in range(1, 6):
-            tp = sample.get(f'enhanced_talking_point_{i}')
-            if pd.notna(tp):
-                print(f"{i}. {tp}")
-    else:
-        print("No samples available")
-else:
-    print("\nWARNING: No explanations to enhance")
+    # Step 2: Apply filters
+    if branchoffice_code:
+        df = df.filter(F.col("branchoffice_code") == branchoffice_code)
+    
+    if business_month:
+        df = df.filter(F.col("business_month") <= business_month)
+    
+    # Step 3: Prepare events data
+    df_events = df.select(
+        "cont_id", "product_category", "register_date",
+        "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+        "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
+        "branchoffice_code", "policy_status", "business_month"
+    ).filter(
+        (F.col("cont_id").isNotNull()) &
+        (F.col("register_date").isNotNull()) &
+        (F.col("product_category").isNotNull()) &
+        (F.col("policy_status") == "Active")
+    )
+    
+    # Step 4: Order events per user
+    df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
+    w = Window.partitionBy("cont_id").orderBy("register_ts")
+    df_events = df_events.withColumn("event_idx", F.row_number().over(w))
+    
+    # Step 5: Build sequences
+    rdd = df_events.select("cont_id", "event_idx", "product_category").rdd.map(
+        lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"]))
+    )
+    
+    grouped = rdd.groupByKey().mapValues(
+        lambda evs: [p for _, p in sorted(list(evs), key=lambda x: x[0])]
+    )
+    
+    grouped = grouped.mapValues(dedupe_consecutive).filter(lambda kv: len(kv[1]) >= 1)
+    
+    # Step 6: Create prediction examples
+    def make_prediction_examples(kv):
+        cont_id, seq = kv
+        seq_ids = [prod2id.get(x, 0) for x in seq]
+        if len(seq_ids) == 0:
+            return []
+        history = seq_ids[-max_seq_len:] if len(seq_ids) > max_seq_len else seq_ids
+        return [(str(cont_id), history)]
+    
+    pred_examples_rdd = grouped.flatMap(make_prediction_examples)
+    
+    pred_schema = StructType([
+        StructField("cont_id", StringType(), True),
+        StructField("hist_seq", ArrayType(IntegerType()), True),
+    ])
+    pred_examples_df = spark.createDataFrame(pred_examples_rdd, pred_schema).cache()
+    
+    # Step 7: Extract history features
+    rows_pred_rdd = pred_examples_rdd.map(
+        lambda x: hist_to_features_row_pred(x, num_classes)
+    )
+    
+    feat_pred_schema = StructType([
+        StructField("cont_id", StringType(), True),
+        StructField("hist_seq", ArrayType(IntegerType()), True),
+        StructField("seq_len", IntegerType(), True),
+        StructField("last_1", IntegerType(), True),
+        StructField("last_2", IntegerType(), True),
+        StructField("unique_prior", IntegerType(), True),
+        StructField("num_switches", IntegerType(), True),
+        StructField("freq_list", ArrayType(IntegerType()), True),
+    ])
+    
+    pred_feats_df = spark.createDataFrame(rows_pred_rdd, feat_pred_schema).cache()
+    
+    # Step 8: Expand freq_list into separate columns
+    for i in range(1, num_classes + 1):
+        pred_feats_df = pred_feats_df.withColumn(f"freq_{i}", F.col("freq_list")[i-1])
+    pred_feats_df = pred_feats_df.drop("freq_list")
+    
+    # Step 9: Join with static features from most recent snapshot
+    w2 = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
+    client_snapshot = (
+        df_events
+        .withColumn("rn", F.row_number().over(w2))
+        .filter(F.col("rn") == 1)
+        .select(
+            "cont_id",
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", 
+            "agent_segment", "branchoffice_code", "business_month", "product_category"
+        )
+    )
+    
+    pred_full = pred_feats_df.join(client_snapshot, on="cont_id", how="inner")
+    
+    # Step 10: Impute missing values
+    pred_full = impute_missing_values(pred_full, categorical_cols)
+    
+    # Step 11: Pad history sequences
+    pad_udf = F.udf(lambda x: pad_history(x, max_seq_len), ArrayType(IntegerType()))
+    pred_full = pred_full.withColumn("hist_padded", pad_udf(F.col("hist_seq")))
+    
+    for i in range(max_seq_len):
+        pred_full = pred_full.withColumn(f"hist_{i}", F.col("hist_padded")[i])
+    
+    pred_full = pred_full.drop("hist_seq", "hist_padded")
+    
+    # Step 12: Encode categorical features
+    pred_full, categorical_mappings = encode_categorical_features(
+        pred_full, categorical_cols, spark.sparkContext, categorical_mappings
+    )
+    
+    # Step 13: Build feature column list
+    model_feature_cols = (
+        [f"hist_{i}" for i in range(max_seq_len)] +
+        ["seq_len", "last_1", "last_2", "unique_prior", "num_switches"] +
+        [f"freq_{i}" for i in range(1, num_classes + 1)] +
+        [
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age"
+        ] +
+        [c + "_idx" for c in categorical_cols]
+    )
+    
+    # Step 14: Convert to Pandas and final cleanup
+    pred_pd = pred_full.select(["cont_id", "business_month", "product_category"] + model_feature_cols).toPandas()
+    pred_pd.fillna(0, inplace=True)
+    
+    return pred_pd, model_feature_cols, categorical_mappings
 
-print("\nEnhanced talking points complete")
-print("=" * 80)
 
-# Display sample of df_explanations
-print("\n📊 Sample df_explanations DataFrame:")
-# Convert problematic string columns to ensure Arrow compatibility
-df_explanations_display = df_explanations.copy()
+# ============================================================================
+# HELPER FUNCTIONS FOR MODEL ARTIFACTS
+# ============================================================================
 
-# Clean up the display DataFrame - convert object columns to proper types
-for col in df_explanations_display.columns:
-    if df_explanations_display[col].dtype == 'object':
-        # For string columns, replace NaN/None with empty string for display
-        df_explanations_display[col] = df_explanations_display[col].fillna('').astype(str)
-        df_explanations_display[col] = df_explanations_display[col].replace('nan', '').replace('None', '')
-
-display(df_explanations_display.head(5))
-
-# Note: If you need to convert to Spark DataFrame, handle string columns carefully:
-# Option 1: Convert only specific columns that are safe
-# Option 2: Use verifySchema=False and let Spark infer types
-# Option 3: Explicitly define schema for problematic columns
-# Example:
-# from pyspark.sql.types import StringType, DoubleType, IntegerType
-# schema = StructType([
-#     StructField("cont_id", StringType(), True),
-#     StructField("aum_band", StringType(), True),  # Keep as string
-#     ...
-# ])
-# spark_df = spark.createDataFrame(df_explanations, schema=schema)
+def get_feature_columns(num_classes: int, max_seq_len: int = MAX_SEQ_LEN, 
+                       categorical_cols: Optional[List[str]] = None) -> List[str]:
+    """
+    Get the list of feature columns in the correct order.
+    
+    Args:
+        num_classes: Number of product classes
+        max_seq_len: Maximum sequence length
+        categorical_cols: List of categorical column names
+        
+    Returns:
+        List of feature column names
+    """
+    if categorical_cols is None:
+        categorical_cols = ["client_seg", "client_seg_1", "aum_band", "channel", "agent_segment", "branchoffice_code"]
+    
+    return (
+        [f"hist_{i}" for i in range(max_seq_len)] +
+        ["seq_len", "last_1", "last_2", "unique_prior", "num_switches"] +
+        [f"freq_{i}" for i in range(1, num_classes + 1)] +
+        [
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age"
+        ] +
+        [c + "_idx" for c in categorical_cols]
+    )
