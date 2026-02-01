@@ -14,8 +14,8 @@ from pyspark.sql.window import Window
 
 CATALOG_NAME = "eda_smartlist"
 SCHEMA_NAME = "models"
-MODEL_NAME = "preprocess_and_predict_model_lgbm"
-MODEL_VERSION = "5"
+MODEL_NAME = "lgbm_hyperparamter_preprocess_and_predict_model"
+MODEL_VERSION = "1"
 
 MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
 
@@ -215,7 +215,7 @@ try:
     if shap_array.shape[1] != len(feature_cols):
         raise ValueError(f"SHAP array second dimension ({shap_array.shape[1]}) doesn't match number of features ({len(feature_cols)})")
     
-    # Enhanced talking point templates
+    # Enhanced talking point templates with context and actions (from cell 17 of training notebook)
     ENHANCED_TEMPLATES = {
         'acct_val_amt': {
             'base': 'Account value of ${value:,.0f}',
@@ -227,7 +227,7 @@ try:
             'context': lambda v: 'high net worth client' if v > 100000 else 'substantial assets',
             'action': 'Explore comprehensive wealth planning'
         },
-        'aum_band': {
+        'aum_segment': {
             'base': 'AUM tier: {value}',
             'context': lambda v: 'premium client segment' if v == 'HIGH' else 'core client segment',
             'action': lambda v: 'White-glove service approach' if v == 'HIGH' else 'Standard advisory approach'
@@ -237,15 +237,50 @@ try:
             'context': 'equity-focused portfolio',
             'action': 'Position growth products'
         },
+        'aggressive_investor': {
+            'base': 'Aggressive risk profile',
+            'context': 'high-growth orientation',
+            'action': 'Emphasize equity and growth opportunities'
+        },
+        'conservative_investor': {
+            'base': 'Conservative risk profile',
+            'context': 'capital preservation focus',
+            'action': 'Highlight stability and guaranteed products'
+        },
+        'client_age': {
+            'base': 'Age {value:.0f}',
+            'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+            'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+        },
         'psn_age': {
             'base': 'Age {value:.0f}',
             'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
             'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
         },
+        'retirement_planning_trigger': {
+            'base': 'Retirement planning phase',
+            'context': 'active retirement preparation',
+            'action': 'Lead with retirement income solutions'
+        },
+        'snp_close_lead_6': {
+            'base': 'S&P 6-month trend: {value:+.1f}%',
+            'context': lambda v: 'positive market momentum' if v > 0 else 'market correction opportunity',
+            'action': lambda v: 'Act on current strength' if v > 0 else 'Position for recovery'
+        },
         'channel': {
             'base': 'Channel: {value}',
             'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
             'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
+        },
+        'channel_idx': {
+            'base': 'Channel: {value}',
+            'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
+            'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
+        },
+        'client_tenure_years': {
+            'base': '{value:.0f} years with us',
+            'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
+            'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
         },
         'client_tenure': {
             'base': '{value:.1f} years with us',
@@ -271,6 +306,11 @@ try:
             'base': 'Purchase frequency: {value}',
             'context': 'consistent engagement',
             'action': 'Leverage loyalty'
+        },
+        'wc_assetmix_annuity': {
+            'base': 'Annuity allocation: ${value:,.0f}',
+            'context': 'income-focused strategy',
+            'action': 'Expand retirement income solutions'
         },
         'face_amt': {
             'base': 'Face amount: ${value:,.0f}',
@@ -301,27 +341,124 @@ try:
             'base': 'Client segment level 1: {value}',
             'context': 'refined segmentation',
             'action': 'Tailor recommendations'
+        },
+        # New features from cell 4
+        'first_acct_val_amt': {
+            'base': 'First policy account value: ${value:,.0f}',
+            'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
+            'action': 'Discuss portfolio diversification'
+        },
+        'first_face_amt': {
+            'base': 'First policy face amount: ${value:,.0f}',
+            'context': 'significant coverage',
+            'action': 'Review coverage adequacy'
+        },
+        'first_cash_val_amt': {
+            'base': 'First policy cash value: ${value:,.0f}',
+            'context': 'accumulated value',
+            'action': 'Optimize cash value growth'
+        },
+        'stock_allocation_ratio': {
+            'base': 'Stock allocation: {value:.1%}',
+            'context': 'equity-focused portfolio',
+            'action': 'Position growth products'
+        },
+        'bond_allocation_ratio': {
+            'base': 'Bond allocation: {value:.1%}',
+            'context': 'fixed-income focus',
+            'action': 'Balance with growth opportunities'
+        },
+        'annuity_allocation_ratio': {
+            'base': 'Annuity allocation: {value:.1%}',
+            'context': 'income-focused strategy',
+            'action': 'Expand retirement income solutions'
+        },
+        'mutual_fund_allocation_ratio': {
+            'base': 'Mutual fund allocation: {value:.1%}',
+            'context': 'diversified investment approach',
+            'action': 'Explore additional diversification'
+        },
+        'age_at_first_policy': {
+            'base': 'Age at first policy: {value:.0f}',
+            'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+            'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+        },
+        'years_to_second_policy': {
+            'base': lambda v: 'First policy client' if v == 0 or v == 0.0 else f'Time to second policy: {v:.1f} years',
+            'context': lambda v: 'new client opportunity' if v == 0 or v == 0.0 else ('active engagement' if v < 3 else 'strategic planning' if v < 10 else 'long-term relationship'),
+            'action': lambda v: 'Build initial relationship' if v == 0 or v == 0.0 else ('Build on engagement momentum' if v < 3 else 'Deepen relationship')
+        },
+        'season_of_first_policy': {
+            'base': 'First policy season: {value}',
+            'context': 'strategic timing',
+            'action': 'Leverage planning cycles'
+        },
+        'first_product_category': {
+            'base': 'First product: {value}',
+            'context': 'current portfolio foundation',
+            'action': 'Build on existing relationship'
+        },
+        'wc_assetmix_bonds': {
+            'base': 'Bond allocation: ${value:,.0f}',
+            'context': 'fixed-income focus',
+            'action': 'Balance with growth opportunities'
+        },
+        'wc_assetmix_mutual_funds': {
+            'base': 'Mutual fund allocation: ${value:,.0f}',
+            'context': 'diversified investment approach',
+            'action': 'Explore additional diversification'
+        },
+        'wc_assetmix_deposits': {
+            'base': 'Deposit allocation: ${value:,.0f}',
+            'context': 'liquidity preference',
+            'action': 'Optimize cash deployment'
+        },
+        'wc_assetmix_other_assets': {
+            'base': 'Other assets: ${value:,.0f}',
+            'context': 'diversified portfolio',
+            'action': 'Comprehensive wealth planning'
         }
     }
     
     def generate_enhanced_talking_point(feature_name, feature_value, shap_value, id2prod=None):
-        """Generate enhanced talking point with context and action"""
+        """Generate enhanced talking point with context and action (from cell 17 of training notebook)"""
         # Impact indicator
         impact = "🔥" if abs(shap_value) > 0.1 else "⭐" if abs(shap_value) > 0.05 else ""
         
-        # Handle special cases
+        # Handle special cases for index features (map to actual values if possible)
+        if feature_name.endswith('_idx'):
+            # Try to map index to actual categorical value
+            base_feat = feature_name.replace('_idx', '')
+            # For product category, try to get actual product name
+            if base_feat == 'first_product_category' and id2prod is not None:
+                try:
+                    prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
+                    if prod_id > 0 and prod_id in id2prod:
+                        feature_value = id2prod[prod_id]
+                        feature_name = 'first_product_category'  # Use base name for template lookup
+                    else:
+                        return None  # Skip if can't map
+                except:
+                    return None  # Skip if conversion fails
+            else:
+                # For other index features, skip (not meaningful to clients)
+                return None
+        
+        # Handle special cases for old sequence features (no longer in feature set, but keep for backward compatibility)
         if feature_name.startswith('hist_'):
+            # Try to map to product name
             if id2prod is not None:
                 try:
                     prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
                     if prod_id > 0 and prod_id in id2prod:
                         feature_value = id2prod[prod_id]
                     elif prod_id == 0:
-                        return None
+                        return None  # Skip zero/empty history
                 except:
                     pass
             template_dict = ENHANCED_TEMPLATES.get('hist_', None)
         elif feature_name.startswith('freq_'):
+            # Skip zero frequencies
             try:
                 freq_val = float(feature_value) if feature_value not in [None, ''] else 0
                 if freq_val == 0:
@@ -330,17 +467,19 @@ try:
                 pass
             template_dict = ENHANCED_TEMPLATES.get('freq_', None)
         elif feature_name in ['last_1', 'last_2']:
+            # Try to map product ID to name
             if id2prod is not None:
                 try:
                     prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
                     if prod_id > 0 and prod_id in id2prod:
                         feature_value = id2prod[prod_id]
                     elif prod_id == 0:
-                        return None
+                        return None  # Skip zero/empty
                 except:
                     pass
             template_dict = ENHANCED_TEMPLATES.get(feature_name, None)
         else:
+            # Find matching template
             template_dict = None
             for template_key in ENHANCED_TEMPLATES:
                 if template_key in feature_name or feature_name.startswith(template_key):
@@ -348,25 +487,40 @@ try:
                     break
         
         if not template_dict:
+            # Skip index features and other non-meaningful features
             if feature_name.endswith('_idx') or feature_name in ['seq_len', 'unique_prior', 'num_switches']:
                 return None
+            # Fallback to simple format
             return f"{impact} {feature_name}: {feature_value} (impact: {shap_value:+.3f})"
         
         # Format base message
         try:
             template = template_dict['base']
-            if '{value' in template:
-                if feature_value is None or feature_value == '' or (isinstance(feature_value, float) and np.isnan(feature_value)):
-                    return None
-                if isinstance(feature_value, str) and feature_value not in ['N/A', 'UNKNOWN']:
-                    try:
-                        feature_value = float(feature_value)
-                    except:
-                        pass
+            
+            # Handle None, NaN, or empty values
+            if feature_value is None or feature_value == '' or (isinstance(feature_value, float) and np.isnan(feature_value)):
+                return None
+            
+            # Convert to numeric if needed (for lambda functions and formatting)
+            original_value = feature_value
+            if isinstance(feature_value, str) and feature_value not in ['N/A', 'UNKNOWN']:
+                try:
+                    feature_value = float(feature_value)
+                except:
+                    # Keep as string if conversion fails
+                    pass
+            
+            # Check if template is a callable (lambda function)
+            if callable(template):
+                message = template(feature_value)
+            elif '{value' in template:
+                # String template with format placeholders
                 message = template.format(value=feature_value)
             else:
+                # Plain string template
                 message = template
-        except:
+        except Exception as e:
+            # If formatting fails, skip this feature
             return None
         
         # Add context
@@ -379,6 +533,7 @@ try:
                     context_str = None
             else:
                 context_str = context
+            
             if context_str:
                 message += f" ({context_str})"
         
@@ -392,6 +547,7 @@ try:
                     action_str = None
             else:
                 action_str = action
+            
             if action_str:
                 message += f" → {action_str}"
         
