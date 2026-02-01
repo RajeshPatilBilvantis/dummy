@@ -1,627 +1,414 @@
-"""
-Preprocessing Pipeline for Wealth Management Product Recommendation Model
+# ============================================================================
+# PreprocessAndPredictModel Class for Unity Catalog
+# ============================================================================
+# This model loads data from 'dl_tenants_daas.us_wealth_management.wealth_management_client_metrics',
+# applies preprocessing steps from the diagnostics notebook, loads a saved LightGBM model,
+# and makes predictions.
 
-This module contains all preprocessing functions needed to transform raw client data
-into features suitable for the LightGBM product recommendation model.
-
-The preprocessing logic is based on Cell 4 from the training notebook, which focuses on
-clients with 2+ policies and uses first policy features to predict the second product.
-"""
-
-from pyspark.sql import functions as F, Window
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+import mlflow.pyfunc
+import mlflow
+import sys
+import os
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Any, Optional
+from pyspark.sql import SparkSession, DataFrame, Window
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, ArrayType, IntegerType
+from collections import Counter
+
+# Add path to preprocessing.py
+sys.path.append('/Workspace/Users/rajesh.patil@equitable.com/Final_model_files')
+
+# Import preprocessing functions from the specified path
+from final_preprocessor import (
+    create_product_category_column,
+    dedupe_consecutive,
+    pad_history,
+    extract_history_features,
+    hist_to_features_row_pred,
+    impute_missing_values,
+    encode_categorical_features,
+    get_feature_columns
+)
+
+# Constants
+MAX_SEQ_LEN = 10
+MIN_EVENTS = 1  # For prediction, we only need at least 1 event
 
 
-# ============================================================================
-# CONSTANTS
-# ============================================================================
-
-MIN_POLICIES = 2  # Minimum number of policies required for training examples
-
-
-# ============================================================================
-# PRODUCT CATEGORY MAPPING
-# ============================================================================
-
-def create_product_category_column(df):
+class PreprocessAndPredictModel(mlflow.pyfunc.PythonModel):
     """
-    Create product_category column from prod_lob, sub_product_level_1, and sub_product_level_2.
+    MLflow PythonModel for preprocessing and prediction.
     
-    Args:
-        df: Spark DataFrame with prod_lob, sub_product_level_1, sub_product_level_2 columns
+    This model:
+    1. Loads data from Unity Catalog table
+    2. Applies preprocessing transformations
+    3. Loads LightGBM model from Unity Catalog
+    4. Makes predictions
+    """
+    
+    def __init__(self):
+        """Initialize the model."""
+        self.model = None
+        self.prod2id = None
+        self.id2prod = None
+        self.label_map = None
+        self.num_classes = None
+        self.categorical_mappings = None
+        self.feature_cols = None
+        self.max_seq_len = MAX_SEQ_LEN
         
-    Returns:
-        Spark DataFrame with product_category column added
-    """
-    return df.withColumn(
-        "product_category",
-        F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
-        .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
-        .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
-        .when(F.col("sub_product_level_2").isin(
-            "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
-            "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
-            "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
-        ), "LIFE_INSURANCE")
-        .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
-        .when(F.col("sub_product_level_1").isin(
-            "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
-            "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
-        ), "RETIREMENT")
-        .when(
-            (F.col("sub_product_level_2").like("%403B%")) |
-            (F.col("sub_product_level_2").like("%401%")) |
-            (F.col("sub_product_level_2").like("%IRA%")) |
-            (F.col("sub_product_level_2").like("%SEP%")),
-            "RETIREMENT"
-        )
-        .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
-        .when(F.col("sub_product_level_1").isin(
-            "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
-            "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
-            "ADVISORY", "CASH SOLICITOR"
-        ), "INVESTMENT")
-        .when(
-            (F.col("sub_product_level_2").like("%Investment%")) |
-            (F.col("sub_product_level_2").like("%Brokerage%")) |
-            (F.col("sub_product_level_2").like("%Advisory%")),
-            "INVESTMENT"
-        )
-        .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
-        .when(
-            (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
-            (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
-            "NETWORK_PRODUCTS"
-        )
-        .when(
-            (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
-            "DISABILITY"
-        )
-        .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
-        .when(F.col("prod_lob") == "OTHERS", "HEALTH")
-        .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
-        .otherwise("OTHER")
-    )
-
-
-# ============================================================================
-# FEATURE ENGINEERING
-# ============================================================================
-
-def add_asset_allocation_ratios(df):
-    """
-    Add asset allocation ratio features based on first policy state.
-    
-    Args:
-        df: Spark DataFrame with wc_assetmix_* and wc_total_assets columns
+    def load_context(self, context: mlflow.pyfunc.PythonModelContext):
+        """
+        Load model artifacts from MLflow context.
         
-    Returns:
-        Spark DataFrame with allocation ratio columns added
-    """
-    df = df.withColumn(
-        "stock_allocation_ratio",
-        F.col("wc_assetmix_stocks") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-    )
-    df = df.withColumn(
-        "bond_allocation_ratio",
-        F.col("wc_assetmix_bonds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-    )
-    df = df.withColumn(
-        "annuity_allocation_ratio",
-        F.col("wc_assetmix_annuity") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-    )
-    df = df.withColumn(
-        "mutual_fund_allocation_ratio",
-        F.col("wc_assetmix_mutual_funds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-    )
-    return df
-
-
-def add_temporal_features(df):
-    """
-    Add temporal features: season_of_first_policy, age_at_first_policy, years_to_second_policy.
-    
-    Args:
-        df: Spark DataFrame with first_register_ts, second_register_ts, birth_ts columns
+        This method is called when the model is loaded. It should load:
+        - The LightGBM model
+        - Product mappings (prod2id, id2prod)
+        - Label mappings
+        - Categorical feature mappings
+        - Other artifacts needed for preprocessing
+        """
+        import lightgbm as lgb
+        import pickle
         
-    Returns:
-        Spark DataFrame with temporal feature columns added
-    """
-    # Season of first policy (Q1-Q4)
-    df = df.withColumn(
-        "season_of_first_policy",
-        F.when(F.month("first_register_ts").between(1, 3), "Q1")
-        .when(F.month("first_register_ts").between(4, 6), "Q2")
-        .when(F.month("first_register_ts").between(7, 9), "Q3")
-        .when(F.month("first_register_ts").between(10, 12), "Q4")
-        .otherwise("Unknown")
-    )
-    
-    # Age at first policy (in years)
-    df = df.withColumn(
-        "age_at_first_policy",
-        F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25
-    )
-    
-    # Years to second policy (time between first and second purchase)
-    df = df.withColumn(
-        "years_to_second_policy",
-        F.datediff(F.col("second_register_ts"), F.col("first_register_ts")) / 365.25
-    )
-    
-    return df
-
-
-# ============================================================================
-# CATEGORICAL ENCODING
-# ============================================================================
-
-def encode_categorical_features(df, categorical_cols, spark_context, categorical_mappings=None):
-    """
-    Encode categorical features to integer indices.
-    
-    Args:
-        df: Spark DataFrame
-        categorical_cols: List of categorical column names
-        spark_context: SparkContext for broadcasting
-        categorical_mappings: Optional dict of {col_name: {value: index}} mappings.
-                            If None, mappings will be created from data.
+        if context is None:
+            raise ValueError("MLflow context is required to load model artifacts")
         
-    Returns:
-        Tuple of (encoded_df, mappings_dict)
-    """
-    if categorical_mappings is None:
-        categorical_mappings = {}
-    
-    result_df = df
-    
-    for c in categorical_cols:
-        if c in categorical_mappings:
-            # Use provided mapping
-            mapping = categorical_mappings[c]
-            b = spark_context.broadcast(mapping)
-            result_df = result_df.withColumn(
-                c + "_idx",
-                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
-                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
-                )
-            )
-        else:
-            # Create mapping from data
-            vals = [r[0] for r in result_df.select(c).distinct().collect()]
-            mapping = {v: i for i, v in enumerate(sorted([str(x) for x in vals]))}
-            categorical_mappings[c] = mapping
-            
-            b = spark_context.broadcast(mapping)
-            result_df = result_df.withColumn(
-                c + "_idx",
-                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
-                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
-                )
-            )
-    
-    return result_df, categorical_mappings
-
-
-# ============================================================================
-# MISSING VALUE IMPUTATION
-# ============================================================================
-
-def impute_missing_values(df, categorical_cols, numeric_fill=0, categorical_mode="UNKNOWN"):
-    """
-    Impute missing values in DataFrame.
-    
-    Args:
-        df: Spark DataFrame
-        categorical_cols: List of categorical column names
-        numeric_fill: Value to fill numeric nulls (default: 0)
-        categorical_mode: Value to fill categorical nulls (default: "UNKNOWN")
+        # Get artifacts directory from context
+        artifacts_dir = context.artifacts.get("artifacts_path") or context.artifacts.get("model_path")
         
-    Returns:
-        Spark DataFrame with imputed values
-    """
-    # Numeric columns to fill
-    numeric_cols = [
-        "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
-        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-        "psn_age", "stock_allocation_ratio", "bond_allocation_ratio",
-        "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
-        "age_at_first_policy", "years_to_second_policy"
-    ]
-    
-    # Fill numeric nulls
-    fill_dict = {c: numeric_fill for c in numeric_cols if c in df.columns}
-    result_df = df.fillna(fill_dict)
-    
-    # Fill categorical nulls with mode
-    for c in categorical_cols:
-        if c in result_df.columns:
+        # Load LightGBM model from model_path artifact if available
+        model_uri = "models:/eda_smartlist.models.final_lgbm_multiclass_model/1"
+        if model_uri:
+            # If model_uri is a MLflow model URI, use mlflow.lightgbm.load_model
             try:
-                mode_val = result_df.groupBy(c).count().orderBy(F.desc("count")).first()
-                mode_val = mode_val[0] if mode_val and mode_val[0] is not None else categorical_mode
-            except:
-                mode_val = categorical_mode
+                self.model = mlflow.lightgbm.load_model(model_uri)
+                print(f"\u2713 Loaded LightGBM model from {model_uri}")
+            except Exception as e:
+                print(f"Could not load LightGBM model from {model_uri}: {e}")
+                self.model = None
+        # else:
+        #     # Try to load model from artifacts_dir if available
+        #     model_file = os.path.join(artifacts_dir, "model.txt")
+        #     if os.path.exists(model_file):
+        #         self.model = lgb.Booster(model_file=model_file)
+        #         print(f"\u2713 Loaded LightGBM model from {model_file}")
+        #     else:
+        #         self.model = None
+        #         print(f"LightGBM model not found in artifacts.")
+        
+        # Load other artifacts
+        artifacts_file = os.path.join(artifacts_dir, "artifacts.pkl")
+        if os.path.exists(artifacts_file):
+            with open(artifacts_file, 'rb') as f:
+                artifacts = pickle.load(f)
+                self.prod2id = artifacts.get('prod2id')
+                self.id2prod = artifacts.get('id2prod')
+                self.label_map = artifacts.get('label_map')
+                self.num_classes = artifacts.get('num_classes', 7)
+                self.categorical_mappings = artifacts.get('categorical_mappings')
+                self.feature_cols = artifacts.get('feature_cols')
+                self.max_seq_len = artifacts.get('max_seq_len', MAX_SEQ_LEN)
+                print(f"✓ Loaded artifacts from {artifacts_file}")
+        else:
+            raise FileNotFoundError(f"Artifacts file not found at {artifacts_file}. Ensure artifacts.pkl is in artifacts.")
+        
+        # Validate required artifacts
+        if self.prod2id is None or self.id2prod is None:
+            raise ValueError("prod2id and id2prod mappings are required")
+        if self.label_map is None:
+            raise ValueError("label_map is required")
+        if self.feature_cols is None:
+            raise ValueError("feature_cols is required")
+    
+    def _load_data_from_table(
+        self, 
+        spark: SparkSession,
+        table_name: str = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
+        branchoffice_code: Optional[str] = None,
+        business_month: Optional[int] = None
+    ) -> DataFrame:
+        """
+        Load data from Unity Catalog table.
+        
+        Args:
+            spark: SparkSession
+            table_name: Name of the table to load from
+            branchoffice_code: Optional branch office code filter
+            business_month: Optional business month filter
             
-            result_df = result_df.withColumn(
-                c,
-                F.when(F.col(c).isNull(), F.lit(mode_val)).otherwise(F.col(c))
+        Returns:
+            Spark DataFrame with raw data
+        """
+        df_raw = spark.table(table_name)
+        
+        # Apply filters if provided
+        if branchoffice_code:
+            df_raw = df_raw.filter(F.col("branchoffice_code") == branchoffice_code)
+        
+        if business_month:
+            df_raw = df_raw.filter(F.col("business_month") <= business_month)
+        
+        return df_raw
+    
+    def _preprocess_data(
+        self,
+        spark: SparkSession,
+        df_raw: DataFrame,
+        prod2id: Dict[str, int],
+        num_classes: int,
+        categorical_mappings: Optional[Dict] = None
+    ) -> pd.DataFrame:
+        """
+        Preprocess raw data following the exact steps from diagnostics notebook.
+        
+        Args:
+            spark: SparkSession
+            df_raw: Raw Spark DataFrame
+            prod2id: Product to ID mapping
+            num_classes: Number of product classes
+            categorical_mappings: Categorical feature mappings
+            
+        Returns:
+            Preprocessed Pandas DataFrame ready for prediction
+        """
+        # Step 1: Create product category column
+        df = create_product_category_column(df_raw)
+        
+        # Step 2: Prepare events data
+        df_events = df.select(
+            "cont_id", "product_category", "register_date",
+            "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+            "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+            "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+            "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
+            "branchoffice_code", "policy_status", "business_month"
+        ).filter(
+            (F.col("cont_id").isNotNull()) &
+            (F.col("register_date").isNotNull()) &
+            (F.col("product_category").isNotNull()) &
+            (F.col("policy_status") == "Active")
+        )
+        
+        # Step 3: Order events per user
+        df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
+        w = Window.partitionBy("cont_id").orderBy("register_ts")
+        df_events = df_events.withColumn("event_idx", F.row_number().over(w))
+        
+        # Step 4: Build sequences
+        rdd = df_events.select("cont_id", "event_idx", "product_category").rdd.map(
+            lambda r: (r["cont_id"], (int(r["event_idx"]), r["product_category"]))
+        )
+        
+        grouped = rdd.groupByKey().mapValues(
+            lambda evs: [p for _, p in sorted(list(evs), key=lambda x: x[0])]
+        )
+        
+        grouped = grouped.mapValues(dedupe_consecutive).filter(lambda kv: len(kv[1]) >= MIN_EVENTS)
+        
+        # Step 5: Create prediction examples
+        def make_prediction_examples(kv):
+            cont_id, seq = kv
+            seq_ids = [prod2id.get(x, 0) for x in seq]
+            if len(seq_ids) == 0:
+                return []
+            history = seq_ids[-self.max_seq_len:] if len(seq_ids) > self.max_seq_len else seq_ids
+            return [(str(cont_id), history)]
+        
+        pred_examples_rdd = grouped.flatMap(make_prediction_examples)
+        
+        pred_schema = StructType([
+            StructField("cont_id", StringType(), True),
+            StructField("hist_seq", ArrayType(IntegerType()), True),
+        ])
+        pred_examples_df = spark.createDataFrame(pred_examples_rdd, pred_schema).cache()
+        
+        # Step 6: Extract history features
+        rows_pred_rdd = pred_examples_rdd.map(
+            lambda x: hist_to_features_row_pred(x, num_classes)
+        )
+        
+        feat_pred_schema = StructType([
+            StructField("cont_id", StringType(), True),
+            StructField("hist_seq", ArrayType(IntegerType()), True),
+            StructField("seq_len", IntegerType(), True),
+            StructField("last_1", IntegerType(), True),
+            StructField("last_2", IntegerType(), True),
+            StructField("unique_prior", IntegerType(), True),
+            StructField("num_switches", IntegerType(), True),
+            StructField("freq_list", ArrayType(IntegerType()), True),
+        ])
+        
+        pred_feats_df = spark.createDataFrame(rows_pred_rdd, feat_pred_schema).cache()
+        
+        # Step 7: Expand freq_list into separate columns
+        for i in range(1, num_classes + 1):
+            pred_feats_df = pred_feats_df.withColumn(f"freq_{i}", F.col("freq_list")[i-1])
+        pred_feats_df = pred_feats_df.drop("freq_list")
+        
+        # Step 8: Join with static features from most recent snapshot
+        w2 = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
+        client_snapshot = (
+            df_events
+            .withColumn("rn", F.row_number().over(w2))
+            .filter(F.col("rn") == 1)
+            .select(
+                "cont_id",
+                "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+                "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+                "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+                "psn_age", "client_seg", "client_seg_1", "aum_band", "channel",
+                "agent_segment", "branchoffice_code", "business_month", "product_category"
             )
-    
-    return result_df
-
-
-# ============================================================================
-# MAIN PREPROCESSING FUNCTION FOR TRAINING
-# ============================================================================
-
-def preprocess_for_training(
-    spark,
-    df_raw,
-    sample_fraction: Optional[float] = None,
-    random_seed: int = 42
-):
-    """
-    Preprocess raw data for training (clients with 2+ policies).
-    
-    Args:
-        spark: SparkSession
-        df_raw: Raw Spark DataFrame with client metrics
-        sample_fraction: Optional fraction to sample (for faster processing)
-        random_seed: Random seed for sampling
+        )
         
-    Returns:
-        Tuple of (train_pd, val_pd, test_pd, model_feature_cols, prod2id, id2prod, 
-                 label_map, categorical_mappings, num_classes)
-    """
-    from pyspark.sql.types import IntegerType
-    
-    # Step 1: Create product category column
-    df = create_product_category_column(df_raw)
-    
-    # Step 2: Filter and prepare events
-    df_events = df.select(
-        "cont_id", "product_category", "register_date", "isrd_brth_date",
-        "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
-        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-        "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
-        "branchoffice_code", "policy_status"
-    ).filter(
-        (F.col("cont_id").isNotNull()) &
-        (F.col("register_date").isNotNull()) &
-        (F.col("product_category").isNotNull()) &
-        (F.col("policy_status") == "Active")
-    )
-    
-    if sample_fraction is not None:
-        df_events = df_events.sample(withReplacement=False, fraction=float(sample_fraction), seed=random_seed)
-    
-    # Step 3: Convert dates and order events per client
-    df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
-    df_events = df_events.withColumn("birth_ts", F.to_timestamp("isrd_brth_date"))
-    
-    w = Window.partitionBy("cont_id").orderBy("register_ts")
-    df_events = df_events.withColumn("event_idx", F.row_number().over(w))
-    
-    # Step 4: Filter to clients with 2+ policies
-    w_count = Window.partitionBy("cont_id")
-    df_events = df_events.withColumn("total_policies", F.count("*").over(w_count))
-    df_events_multi = df_events.filter(F.col("total_policies") >= MIN_POLICIES)
-    
-    # Step 5: Separate first and second policy data
-    df_first = df_events_multi.filter(F.col("event_idx") == 1).select(
-        F.col("cont_id"),
-        F.col("product_category").alias("first_product_category"),
-        F.col("register_ts").alias("first_register_ts"),
-        F.col("birth_ts"),
-        F.col("acct_val_amt").alias("first_acct_val_amt"),
-        F.col("face_amt").alias("first_face_amt"),
-        F.col("cash_val_amt").alias("first_cash_val_amt"),
-        F.col("wc_total_assets"),
-        F.col("wc_assetmix_stocks"),
-        F.col("wc_assetmix_bonds"),
-        F.col("wc_assetmix_mutual_funds"),
-        F.col("wc_assetmix_annuity"),
-        F.col("wc_assetmix_deposits"),
-        F.col("wc_assetmix_other_assets"),
-        F.col("psn_age"),
-        F.col("client_seg"),
-        F.col("client_seg_1"),
-        F.col("aum_band"),
-        F.col("channel"),
-        F.col("agent_segment"),
-        F.col("branchoffice_code")
-    )
-    
-    df_second = df_events_multi.filter(F.col("event_idx") == 2).select(
-        F.col("cont_id"),
-        F.col("product_category").alias("second_product_category"),
-        F.col("register_ts").alias("second_register_ts")
-    )
-    
-    # Step 6: Join first and second policy on cont_id
-    df_combined = df_first.join(df_second, on="cont_id", how="inner")
-    
-    # Step 7: Add new features
-    df_combined = add_asset_allocation_ratios(df_combined)
-    df_combined = add_temporal_features(df_combined)
-    
-    # Step 8: Build product vocabulary for SECOND product (target)
-    prod_list = df_combined.select("second_product_category").distinct().rdd.map(lambda r: r[0]).collect()
-    prod_list = sorted([p for p in prod_list if p is not None])
-    prod2id = {p: i for i, p in enumerate(prod_list)}  # 0-indexed labels
-    id2prod = {v: k for k, v in prod2id.items()}
-    num_classes = len(prod2id)
-    
-    # Map second_product_category to label
-    df_combined = df_combined.withColumn(
-        "label",
-        F.when(F.col("second_product_category").isNotNull(), 
-               F.udf(lambda x: prod2id.get(x, 0), IntegerType())(F.col("second_product_category")))
-        .otherwise(0)
-    )
-    
-    # Create label_map (for compatibility with other code)
-    label_map = {prod2id[p]: prod2id[p] for p in prod_list}  # Identity mapping in this case
-    
-    # Step 9: Fill missing values
-    categorical_cols = ["first_product_category", "client_seg", "client_seg_1", "aum_band", 
-                        "channel", "agent_segment", "branchoffice_code", "season_of_first_policy"]
-    df_combined = impute_missing_values(df_combined, categorical_cols)
-    
-    # Step 10: Encode categorical features
-    df_combined, categorical_mappings = encode_categorical_features(
-        df_combined, categorical_cols, spark.sparkContext, categorical_mappings=None
-    )
-    
-    # Step 11: Define model feature columns
-    model_feature_cols = [
-        # First policy numeric features
-        "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
-        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-        "psn_age",
-        # NEW allocation ratio features
-        "stock_allocation_ratio", "bond_allocation_ratio",
-        "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
-        # NEW temporal features
-        "age_at_first_policy", "years_to_second_policy",
-        # Encoded categorical features (including FIRST product as feature)
-        "first_product_category_idx", "client_seg_idx", "client_seg_1_idx", "aum_band_idx",
-        "channel_idx", "agent_segment_idx", "branchoffice_code_idx", "season_of_first_policy_idx"
-    ]
-    
-    # Step 12: Split train/val/test and convert to Pandas
-    train_spark, val_spark, test_spark = df_combined.randomSplit([0.8, 0.1, 0.1], seed=random_seed)
-    
-    train_pd = train_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
-    val_pd = val_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
-    test_pd = test_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
-    
-    # Step 13: Final data cleanup
-    train_pd.fillna(0, inplace=True)
-    val_pd.fillna(0, inplace=True)
-    test_pd.fillna(0, inplace=True)
-    
-    return (train_pd, val_pd, test_pd, model_feature_cols, prod2id, id2prod, 
-            label_map, categorical_mappings, num_classes)
-
-
-# ============================================================================
-# MAIN PREPROCESSING FUNCTION FOR PREDICTION
-# ============================================================================
-
-def preprocess_for_prediction(
-    spark,
-    df_raw,
-    prod2id: Dict[str, int],
-    num_classes: int,
-    categorical_cols: Optional[List[str]] = None,
-    categorical_mappings: Optional[Dict] = None,
-    branchoffice_code: Optional[str] = None,
-    business_month: Optional[int] = None,
-    single_policy_only: bool = True
-):
-    """
-    Preprocess raw data for prediction.
-    
-    For single_policy_only=True: Processes clients with only ONE policy (treats it as first policy).
-    For single_policy_only=False: Processes clients with 2+ policies (uses first policy features).
-    
-    Args:
-        spark: SparkSession
-        df_raw: Raw Spark DataFrame with client metrics
-        prod2id: Dictionary mapping product categories to IDs
-        num_classes: Number of product classes
-        categorical_cols: List of categorical column names
-        categorical_mappings: Optional dict of categorical mappings
-        branchoffice_code: Optional branch office code filter
-        business_month: Optional business month filter
-        single_policy_only: If True, process only single-policy clients; if False, process multi-policy clients
+        pred_full = pred_feats_df.join(client_snapshot, on="cont_id", how="inner")
         
-    Returns:
-        Tuple of (preprocessed_pandas_df, feature_columns_list, categorical_mappings)
-    """
-    from pyspark.sql.types import IntegerType
-    
-    if categorical_cols is None:
-        categorical_cols = ["first_product_category", "client_seg", "client_seg_1", "aum_band", 
-                            "channel", "agent_segment", "branchoffice_code", "season_of_first_policy"]
-    
-    # Step 1: Create product category column
-    df = create_product_category_column(df_raw)
-    
-    # Step 2: Apply filters
-    if branchoffice_code:
-        df = df.filter(F.col("branchoffice_code") == branchoffice_code)
-    
-    if business_month:
-        df = df.filter(F.col("business_month") <= business_month)
-    
-    # Step 3: Prepare events data
-    df_events = df.select(
-        "cont_id", "product_category", "register_date", "isrd_brth_date",
-        "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
-        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-        "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
-        "branchoffice_code", "policy_status", "policy_no"
-    ).filter(
-        (F.col("cont_id").isNotNull()) &
-        (F.col("register_date").isNotNull()) &
-        (F.col("product_category").isNotNull()) &
-        (F.col("policy_status") == "Active")
-    )
-    
-    # Step 4: Convert dates and order events per client
-    df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
-    df_events = df_events.withColumn("birth_ts", F.to_timestamp("isrd_brth_date"))
-    
-    w = Window.partitionBy("cont_id").orderBy("register_ts")
-    df_events = df_events.withColumn("event_idx", F.row_number().over(w))
-    
-    # Step 5: Filter based on policy count
-    w_count = Window.partitionBy("cont_id")
-    df_events = df_events.withColumn("total_policies", F.count("*").over(w_count))
-    
-    if single_policy_only:
-        # Keep only clients with exactly 1 policy
-        df_pred_events = df_events.filter(F.col("total_policies") == 1)
-    else:
-        # Keep clients with 2+ policies
-        df_pred_events = df_events.filter(F.col("total_policies") >= MIN_POLICIES)
-    
-    # Step 6: Prepare first policy data
-    df_first = df_pred_events.filter(F.col("event_idx") == 1).select(
-        F.col("cont_id"),
-        F.col("product_category").alias("first_product_category"),
-        F.col("register_ts").alias("first_register_ts"),
-        F.col("birth_ts"),
-        F.col("acct_val_amt").alias("first_acct_val_amt"),
-        F.col("face_amt").alias("first_face_amt"),
-        F.col("cash_val_amt").alias("first_cash_val_amt"),
-        F.col("wc_total_assets"),
-        F.col("wc_assetmix_stocks"),
-        F.col("wc_assetmix_bonds"),
-        F.col("wc_assetmix_mutual_funds"),
-        F.col("wc_assetmix_annuity"),
-        F.col("wc_assetmix_deposits"),
-        F.col("wc_assetmix_other_assets"),
-        F.col("psn_age"),
-        F.col("client_seg"),
-        F.col("client_seg_1"),
-        F.col("aum_band"),
-        F.col("channel"),
-        F.col("agent_segment"),
-        F.col("branchoffice_code")
-    )
-    
-    # Step 7: Add new features
-    df_first = add_asset_allocation_ratios(df_first)
-    
-    # For temporal features, handle single vs multi-policy differently
-    if single_policy_only:
-        # For single policy clients, set years_to_second_policy to 0
-        df_first = df_first.withColumn(
-            "season_of_first_policy",
-            F.when(F.month("first_register_ts").between(1, 3), "Q1")
-            .when(F.month("first_register_ts").between(4, 6), "Q2")
-            .when(F.month("first_register_ts").between(7, 9), "Q3")
-            .when(F.month("first_register_ts").between(10, 12), "Q4")
-            .otherwise("Unknown")
-        )
-        df_first = df_first.withColumn(
-            "age_at_first_policy",
-            F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25
-        )
-        df_first = df_first.withColumn("years_to_second_policy", F.lit(0.0))
-    else:
-        # For multi-policy clients, we need second_register_ts
-        # This would require joining with second policy data
-        # For now, we'll use the same logic as single policy
-        df_first = df_first.withColumn(
-            "season_of_first_policy",
-            F.when(F.month("first_register_ts").between(1, 3), "Q1")
-            .when(F.month("first_register_ts").between(4, 6), "Q2")
-            .when(F.month("first_register_ts").between(7, 9), "Q3")
-            .when(F.month("first_register_ts").between(10, 12), "Q4")
-            .otherwise("Unknown")
-        )
-        df_first = df_first.withColumn(
-            "age_at_first_policy",
-            F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25
-        )
-        # For multi-policy, we'd need to join with second policy to get years_to_second_policy
-        # For simplicity, set to 0 (this should be calculated properly in production)
-        df_first = df_first.withColumn("years_to_second_policy", F.lit(0.0))
-    
-    # Step 8: Fill missing values
-    df_first = impute_missing_values(df_first, categorical_cols)
-    
-    # Step 9: Encode categorical features
-    df_first, categorical_mappings = encode_categorical_features(
-        df_first, categorical_cols, spark.sparkContext, categorical_mappings
-    )
-    
-    # Step 10: Build feature column list
-    model_feature_cols = [
-        # First policy numeric features
-        "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
-        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-        "psn_age",
-        # NEW allocation ratio features
-        "stock_allocation_ratio", "bond_allocation_ratio",
-        "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
-        # NEW temporal features
-        "age_at_first_policy", "years_to_second_policy",
-        # Encoded categorical features (including FIRST product as feature)
-        "first_product_category_idx", "client_seg_idx", "client_seg_1_idx", "aum_band_idx",
-        "channel_idx", "agent_segment_idx", "branchoffice_code_idx", "season_of_first_policy_idx"
-    ]
-    
-    # Step 11: Convert to Pandas and final cleanup
-    pred_pd = df_first.select(["cont_id"] + model_feature_cols).toPandas()
-    pred_pd.fillna(0, inplace=True)
-    
-    return pred_pd, model_feature_cols, categorical_mappings
-
-
-# ============================================================================
-# HELPER FUNCTIONS FOR MODEL ARTIFACTS
-# ============================================================================
-
-def get_feature_columns(categorical_cols: Optional[List[str]] = None) -> List[str]:
-    """
-    Get the list of feature columns in the correct order.
-    
-    Args:
-        categorical_cols: List of categorical column names
+        # Step 9: Impute missing values
+        categorical_cols = ["client_seg", "client_seg_1", "aum_band", "channel", "agent_segment", "branchoffice_code"]
+        pred_full = impute_missing_values(pred_full, categorical_cols)
         
-    Returns:
-        List of feature column names
-    """
-    if categorical_cols is None:
-        categorical_cols = ["first_product_category", "client_seg", "client_seg_1", "aum_band", 
-                            "channel", "agent_segment", "branchoffice_code", "season_of_first_policy"]
+        # Step 10: Pad history sequences
+        pad_udf = F.udf(lambda x: pad_history(x, self.max_seq_len), ArrayType(IntegerType()))
+        pred_full = pred_full.withColumn("hist_padded", pad_udf(F.col("hist_seq")))
+        
+        for i in range(self.max_seq_len):
+            pred_full = pred_full.withColumn(f"hist_{i}", F.col("hist_padded")[i])
+        
+        pred_full = pred_full.drop("hist_seq", "hist_padded")
+        
+        # Step 11: Encode categorical features
+        pred_full, updated_categorical_mappings = encode_categorical_features(
+            pred_full, categorical_cols, spark.sparkContext, categorical_mappings
+        )
+        
+        # Step 12: Build feature column list
+        if self.feature_cols is None:
+            self.feature_cols = get_feature_columns(num_classes, self.max_seq_len, categorical_cols)
+        
+        # Step 13: Convert to Pandas
+        pred_pd = pred_full.select(["cont_id", "business_month", "product_category"] + self.feature_cols).toPandas()
+        pred_pd.fillna(0, inplace=True)
+        
+        return pred_pd
     
-    return [
-        # First policy numeric features
-        "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
-        "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-        "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-        "psn_age",
-        # NEW allocation ratio features
-        "stock_allocation_ratio", "bond_allocation_ratio",
-        "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
-        # NEW temporal features
-        "age_at_first_policy", "years_to_second_policy",
-        # Encoded categorical features (including FIRST product as feature)
-        "first_product_category_idx", "client_seg_idx", "client_seg_1_idx", "aum_band_idx",
-        "channel_idx", "agent_segment_idx", "branchoffice_code_idx", "season_of_first_policy_idx"
-    ]
-
+    def predict(
+        self, 
+        context: mlflow.pyfunc.PythonModelContext, 
+        model_input: Any
+    ) -> pd.DataFrame:
+        """
+        Make predictions on input data.
+        
+        Args:
+            context: MLflow context
+            model_input: Can be:
+                - Spark DataFrame (will be used directly)
+                - Pandas DataFrame (will be converted to Spark)
+                - Dict with parameters (will load from table)
+                
+        Returns:
+            Pandas DataFrame with predictions
+        """
+        spark = SparkSession.builder.getOrCreate()
+        
+        # Handle different input types
+        if isinstance(model_input, dict):
+            # If input is a dict, treat it as parameters for loading from table
+            table_name = model_input.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+            branchoffice_code = model_input.get("branchoffice_code")
+            business_month = model_input.get("business_month")
+            df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+        elif isinstance(model_input, pd.DataFrame):
+            # Check if this is a dict that was converted to DataFrame by MLflow
+            # If it only has dict keys (table_name, branchoffice_code, business_month), treat as dict
+            expected_dict_keys = {"table_name", "branchoffice_code", "business_month"}
+            if set(model_input.columns).issubset(expected_dict_keys) and len(model_input.columns) <= 3:
+                # This is likely a dict that was converted to DataFrame
+                if len(model_input) > 0:
+                    row_dict = model_input.iloc[0].to_dict()
+                    table_name = row_dict.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                    branchoffice_code = row_dict.get("branchoffice_code")
+                    business_month = row_dict.get("business_month")
+                else:
+                    table_name = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
+                    branchoffice_code = None
+                    business_month = None
+                df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+            else:
+                # Convert Pandas to Spark DataFrame (actual data)
+                df_raw = spark.createDataFrame(model_input)
+        elif isinstance(model_input, DataFrame):
+            # Check if this is a dict that was converted to Spark DataFrame
+            expected_dict_keys = {"table_name", "branchoffice_code", "business_month"}
+            if set(model_input.columns).issubset(expected_dict_keys) and len(model_input.columns) <= 3:
+                # This is likely a dict that was converted to DataFrame
+                row = model_input.first().asDict() if model_input.count() > 0 else {}
+                table_name = row.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                branchoffice_code = row.get("branchoffice_code")
+                business_month = row.get("business_month")
+                df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+            else:
+                df_raw = model_input
+        else:
+            # Try to convert to dict first
+            try:
+                if hasattr(model_input, 'to_dict'):
+                    model_input_dict = model_input.to_dict()
+                    if isinstance(model_input_dict, dict):
+                        table_name = model_input_dict.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                        branchoffice_code = model_input_dict.get("branchoffice_code")
+                        business_month = model_input_dict.get("business_month")
+                        df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+                    else:
+                        df_raw = spark.createDataFrame(model_input)
+                else:
+                    df_raw = spark.createDataFrame(model_input)
+            except:
+                df_raw = spark.createDataFrame(model_input)
+        
+        # Ensure we have required artifacts
+        if self.prod2id is None or self.id2prod is None:
+            raise ValueError("Model artifacts not loaded. Ensure load_context was called properly.")
+        
+        # Preprocess data
+        pred_pd = self._preprocess_data(
+            spark=spark,
+            df_raw=df_raw,
+            prod2id=self.prod2id,
+            num_classes=self.num_classes,
+            categorical_mappings=self.categorical_mappings
+        )
+        
+        # Make predictions
+        if self.model is None:
+            raise ValueError("Model not loaded. Ensure load_context was called properly.")
+        
+        pred_probs = self.model.predict(pred_pd[self.feature_cols])
+        pred_class_ids = np.argmax(pred_probs, axis=1)
+        
+        # Convert predictions to product names
+        inv_label_map = {v: k for k, v in self.label_map.items()} if self.label_map else {}
+        final_id2prod = {
+            model_id: self.id2prod[original_id]
+            for model_id, original_id in inv_label_map.items()
+        } if inv_label_map and self.id2prod else {}
+        
+        pred_pd["pred_class_id"] = pred_class_ids
+        pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(
+            lambda x: final_id2prod.get(x, "UNKNOWN")
+        )
+        
+        # Add probability columns
+        num_classes_pred = pred_probs.shape[1]
+        for i in range(num_classes_pred):
+            pred_pd[f"prob_{i}"] = pred_probs[:, i]
+        pred_pd["pred_prob"] = pred_pd.apply(
+            lambda r: r[f"prob_{r['pred_class_id']}"], axis=1
+        )
+        
+        # Return relevant columns
+        return pred_pd[["cont_id","product_category","pred_class_id", "pred_product", "pred_prob"] + 
+                       [f"prob_{i}" for i in range(num_classes_pred)]]
