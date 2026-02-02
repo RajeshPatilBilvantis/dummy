@@ -1,0 +1,46 @@
+Key Points & Action Items
+
+Data Counts & Filters
+
+Share row counts at each stage:
+
+Total data extracted
+
+After applying filters (non-null Count ID, non-null Registration Date, etc.)
+
+After filtering clients with more than two policies
+
+Confirm the final dataset and row count used for model training
+Owner: Rajesh
+
+Null Values in Client Metrics
+
+Investigate why Count ID and Registration Date are null in client metrics
+
+Connect with Banu to identify the root cause
+Owner: Rajesh
+
+Monthly Prediction Comparison
+
+Compare last month vs current month predictions
+
+Validate consistency of predicted product and confidence score for the same customer
+Owner: Rajesh
+
+Model & Data Drift Strategy
+
+Evaluate approach to identify data/model drift
+
+Decide between drift-based retraining vs retraining every business month
+Owner: Rajesh
+
+Prediction Explainability
+
+Provide reasoning for each prediction:
+
+Why a product was recommended
+
+Key patterns/features influencing high confidence scores
+
+Why others were not predicted similarly
+Owner: Rajesh
