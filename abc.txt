@@ -1,693 +1,326 @@
 # ============================================================================
-# Predictions for axa_party_id with Only 1 Policy
+# PreprocessAndPredictModel Class for Unity Catalog
 # ============================================================================
-# This cell filters the data to only include axa_party_id who have exactly 1 policy
-# and then makes predictions using the preprocess_and_predict_model_lgbm model
+# This model loads data from 'dl_tenants_daas.us_wealth_management.wealth_management_client_metrics',
+# applies preprocessing steps from cell 4 of the training notebook, loads a saved LightGBM model,
+# and makes predictions.
+#
+# NOTE: This model is specifically designed for SINGLE-POLICY CLIENTS ONLY.
+# It treats the single policy as the "first policy" and sets years_to_second_policy to 0.
 
+import mlflow.pyfunc
 import mlflow
-from pyspark.sql import SparkSession, functions as F
-from pyspark.sql.window import Window
+import sys
+import os
+import numpy as np
+import pandas as pd
+from typing import Dict, Any, Optional
+from pyspark.sql import SparkSession, DataFrame, Window
+from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
+# Add path to preprocessing.py
+sys.path.append('/Workspace/Users/rajesh.patil@equitable.com/IMPORTANT')
 
-CATALOG_NAME = "eda_smartlist"
-SCHEMA_NAME = "models"
-MODEL_NAME = "lgbm_hyperparamter_preprocess_and_predict_model"
-MODEL_VERSION = "1"
+# Import preprocessing functions from final_preprocessor
+from final_preprocessor import (
+    create_product_category_column,
+    add_asset_allocation_ratios,
+    add_temporal_features,
+    impute_missing_values,
+    encode_categorical_features,
+    get_feature_columns,
+    preprocess_for_prediction
+)
 
-MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
-
-# Table and filter parameters
-TABLE_NAME = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
-BRANCHOFFICE_CODE = "83"  # Optional: set to None if you want all branch offices
-BUSINESS_MONTH = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics").agg(F.max("business_month")).first()[0]
-
-# ============================================================================
-# STEP 1: Load Model from Unity Catalog
-# ============================================================================
-
-print("=" * 80)
-print("Loading Model from Unity Catalog")
-print("=" * 80)
-
-try:
-    model = mlflow.pyfunc.load_model(MODEL_URI)
-    print(f"✓ Model loaded successfully from {MODEL_URI}")
-except Exception as e:
-    print(f"✗ Failed to load model: {e}")
-    import traceback
-    traceback.print_exc()
-    raise
-
-# ============================================================================
-# STEP 2: Load and Filter Data - Only axa_party_id with Exactly 1 Policy
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("Loading and Filtering Data")
-print("=" * 80)
-
-spark = SparkSession.builder.getOrCreate()
-
-# Load data from table
-df_raw = spark.table(TABLE_NAME)
-
-# Apply optional filters
-if BRANCHOFFICE_CODE:
-    df_raw = df_raw.filter(F.col("branchoffice_code") == BRANCHOFFICE_CODE)
-    print(f"✓ Filtered by branchoffice_code: {BRANCHOFFICE_CODE}")
-
-if BUSINESS_MONTH:
-    df_raw = df_raw.filter(F.col("business_month") == BUSINESS_MONTH)
-    print(f"✓ Filtered by business_month = {BUSINESS_MONTH}")
-
-# Filter to only Active policies (required for the model)
-df_raw = df_raw.filter(F.col("policy_status") == "Active")
-print("✓ Filtered to Active policies only")
-
-# Count distinct policies per axa_party_id
-# Assuming each row represents a policy, we count distinct cont_id (or policy_id if available) per axa_party_id
-
-policy_count_df = df_raw.groupBy("axa_party_id").agg(
-    F.countDistinct("policy_no").alias("policy_count")
-).filter(F.col("policy_count") == 1)
-
-print(f"✓ Found {policy_count_df.count():,} axa_party_id with exactly 1 policy")
-
-# Get the list of axa_party_id with exactly 1 policy
-single_policy_party_ids = [row["axa_party_id"] for row in policy_count_df.select("axa_party_id").collect()]
-print(f"✓ Extracted {len(single_policy_party_ids):,} unique axa_party_id")
-
-# Filter the original data to only include these axa_party_id
-df_filtered = df_raw.filter(F.col("axa_party_id").isin(single_policy_party_ids))
-
-print(f"✓ Filtered data: {df_filtered.count():,} rows")
-print(f"  Unique axa_party_id: {df_filtered.select('axa_party_id').distinct().count():,}")
-print(f"  Unique cont_id: {df_filtered.select('cont_id').distinct().count():,}")
-
-# ============================================================================
-# STEP 3: Make Predictions
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("Making Predictions")
-print("=" * 80)
-
-try:
-    # MLflow's schema validation expects a dict with table_name, branchoffice_code, business_month
-    # but our model's predict method can handle Spark DataFrames directly
-    # We need to bypass MLflow's schema validation by accessing the underlying PythonModel
-    print("Accessing model's underlying PythonModel to bypass schema validation...")
+class PreprocessAndPredictModel(mlflow.pyfunc.PythonModel):
+    """
+    MLflow PythonModel for preprocessing and prediction.
     
-    # Access the underlying PythonModel directly to bypass MLflow's schema validation
-    # The model's load_context has already loaded all artifacts, so we can use the existing context
-    python_model = model._model_impl.python_model
+    This model is specifically designed for SINGLE-POLICY CLIENTS ONLY.
     
-    # Use the model's existing context (artifacts are already loaded)
-    # Pass None as context - our predict method handles this, but artifacts are already loaded in load_context
-    predictions = python_model.predict(None, df_filtered)
+    This model:
+    1. Loads data from Unity Catalog table
+    2. Filters to clients with exactly ONE policy
+    3. Applies preprocessing transformations from cell 4 (treats single policy as "first policy")
+    4. Loads LightGBM model from Unity Catalog (eda_smartlist.models.lgbm_model_hyperparameter_310126)
+    5. Makes predictions for the next best product
     
-    print(f"✓ Predictions successful")
-    print(f"  Shape: {predictions.shape}")
-    print(f"  Columns: {list(predictions.columns)}")
-    print(f"\n  Sample predictions:")
-    display(predictions.head(20))
+    Uses the feature set from cell 4:
+    - First policy numeric features (treats single policy as first policy)
+    - Asset allocation ratios
+    - Temporal features (age_at_first_policy, years_to_second_policy=time since first policy, season_of_first_policy)
+    - Encoded categorical features
     
-    # Summary statistics
-    print(f"\n  Summary:")
-    print(f"    Total predictions: {len(predictions):,}")
-    print(f"    Unique clients (cont_id): {predictions['cont_id'].nunique():,}")
-    print(f"\n  Top predicted products:")
-    top_products = predictions['pred_product'].value_counts().head(10)
-    for product, count in top_products.items():
-        print(f"    {product}: {count:,}")
+    Note: For single-policy clients, years_to_second_policy is calculated as the time elapsed
+    since the first policy registration (current_timestamp - first_register_ts), representing
+    how long the client has had their single policy. This matches the training logic which uses
+    timestamps for consistency.
+    """
+    
+    def __init__(self):
+        """Initialize the model."""
+        self.model = None
+        self.prod2id = None
+        self.id2prod = None
+        self.label_map = None
+        self.num_classes = None
+        self.categorical_mappings = None
+        self.feature_cols = None
         
-except Exception as e:
-    print(f"✗ Prediction failed: {e}")
-    import traceback
-    traceback.print_exc()
-    raise
-
-# ============================================================================
-# STEP 4: Generate Talking Points using SHAP Analysis
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("Generating Talking Points with SHAP Analysis")
-print("=" * 80)
-
-try:
-    import shap
-    import numpy as np
-    import pandas as pd
-    
-    # Get the underlying LightGBM model for SHAP
-    lgbm_model = python_model.model
-    
-    SHAP_SAMPLE_SIZE = len(predictions)
-    
-    print(f"Computing SHAP values for {SHAP_SAMPLE_SIZE} samples...")
-
-    # Get sample cont_ids
-    sample_cont_ids = predictions['cont_id'].head(SHAP_SAMPLE_SIZE).tolist()
-    df_sample = df_filtered.filter(F.col("cont_id").isin(sample_cont_ids))
-    
-    # Re-preprocess to get feature values
-    print("Re-preprocessing sample data to get feature values...")
-    pred_pd_sample = python_model._preprocess_data(
-        spark=spark,
-        df_raw=df_sample,
-        prod2id=python_model.prod2id,
-        num_classes=python_model.num_classes,
-        categorical_mappings=python_model.categorical_mappings
-    )
-    
-    # Get feature columns
-    feature_cols = python_model.feature_cols
-    
-    # Compute SHAP values
-    print("Computing SHAP values...")
-    explainer = shap.TreeExplainer(lgbm_model)
-    shap_values = explainer.shap_values(pred_pd_sample[feature_cols])
-    
-    # Get predictions for the sample to determine which class SHAP values to use
-    pred_probs_sample = lgbm_model.predict(pred_pd_sample[feature_cols])
-    pred_class_ids_sample = np.argmax(pred_probs_sample, axis=1)
-    
-    # Handle SHAP output format (list of arrays or 3D array for multiclass)
-    print(f"  SHAP values type: {type(shap_values)}, shape: {shap_values.shape if isinstance(shap_values, np.ndarray) else [len(x) if isinstance(x, np.ndarray) else 'N/A' for x in shap_values] if isinstance(shap_values, list) else 'N/A'}")
-    
-    if isinstance(shap_values, list):
-        # List of arrays: one array per class, each with shape (n_samples, n_features)
-        num_classes_shap = len(shap_values)
-        print(f"  Detected list format with {num_classes_shap} classes")
-        # Extract SHAP values for the predicted class for each sample
-        shap_array = np.array([shap_values[pred_class_ids_sample[i]][i] for i in range(len(pred_pd_sample))])
-    elif isinstance(shap_values, np.ndarray) and len(shap_values.shape) == 3:
-        # 3D array: could be (n_samples, n_features, n_classes) or (n_classes, n_samples, n_features)
-        n_samples, n_features, n_classes = shap_values.shape
-        print(f"  Detected 3D array format: ({n_samples}, {n_features}, {n_classes})")
-        # Try (n_samples, n_features, n_classes) format first
-        if n_samples == len(pred_pd_sample) and n_features == len(feature_cols):
-            # Shape is (n_samples, n_features, n_classes)
-            shap_array = np.array([shap_values[i, :, pred_class_ids_sample[i]] for i in range(n_samples)])
-        elif n_classes == len(pred_pd_sample) and n_samples == len(feature_cols):
-            # Shape might be (n_features, n_samples, n_classes) - transpose
-            shap_values = shap_values.transpose(1, 0, 2)  # Now (n_samples, n_features, n_classes)
-            shap_array = np.array([shap_values[i, :, pred_class_ids_sample[i]] for i in range(len(pred_pd_sample))])
-        else:
-            # Try alternative: (n_classes, n_samples, n_features)
-            shap_values_reshaped = shap_values.transpose(1, 2, 0)  # (n_samples, n_classes, n_features)
-            shap_array = np.array([shap_values_reshaped[i, pred_class_ids_sample[i], :] for i in range(len(pred_pd_sample))])
-    else:
-        # Single 2D array (binary classification or single output)
-        print(f"  Detected 2D array format")
-        shap_array = shap_values
-    
-    print(f"✓ Computed SHAP values: {shap_array.shape}")
-    print(f"  Expected shape: (n_samples={len(pred_pd_sample)}, n_features={len(feature_cols)})")
-    
-    # Validate shape
-    if shap_array.shape[0] != len(pred_pd_sample):
-        raise ValueError(f"SHAP array first dimension ({shap_array.shape[0]}) doesn't match number of samples ({len(pred_pd_sample)})")
-    if shap_array.shape[1] != len(feature_cols):
-        raise ValueError(f"SHAP array second dimension ({shap_array.shape[1]}) doesn't match number of features ({len(feature_cols)})")
-    
-    # Enhanced talking point templates with context and actions (from cell 17 of training notebook)
-    ENHANCED_TEMPLATES = {
-        'acct_val_amt': {
-            'base': 'Account value of ${value:,.0f}',
-            'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
-            'action': 'Discuss portfolio diversification'
-        },
-        'wc_total_assets': {
-            'base': 'Total assets of ${value:,.0f}',
-            'context': lambda v: 'high net worth client' if v > 100000 else 'substantial assets',
-            'action': 'Explore comprehensive wealth planning'
-        },
-        'aum_segment': {
-            'base': 'AUM tier: {value}',
-            'context': lambda v: 'premium client segment' if v == 'HIGH' else 'core client segment',
-            'action': lambda v: 'White-glove service approach' if v == 'HIGH' else 'Standard advisory approach'
-        },
-        'wc_assetmix_stocks': {
-            'base': 'Stock allocation: ${value:,.0f}',
-            'context': 'equity-focused portfolio',
-            'action': 'Position growth products'
-        },
-        'aggressive_investor': {
-            'base': 'Aggressive risk profile',
-            'context': 'high-growth orientation',
-            'action': 'Emphasize equity and growth opportunities'
-        },
-        'conservative_investor': {
-            'base': 'Conservative risk profile',
-            'context': 'capital preservation focus',
-            'action': 'Highlight stability and guaranteed products'
-        },
-        'client_age': {
-            'base': 'Age {value:.0f}',
-            'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
-            'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
-        },
-        'psn_age': {
-            'base': 'Age {value:.0f}',
-            'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
-            'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
-        },
-        'retirement_planning_trigger': {
-            'base': 'Retirement planning phase',
-            'context': 'active retirement preparation',
-            'action': 'Lead with retirement income solutions'
-        },
-        'snp_close_lead_6': {
-            'base': 'S&P 6-month trend: {value:+.1f}%',
-            'context': lambda v: 'positive market momentum' if v > 0 else 'market correction opportunity',
-            'action': lambda v: 'Act on current strength' if v > 0 else 'Position for recovery'
-        },
-        'channel': {
-            'base': 'Channel: {value}',
-            'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
-            'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
-        },
-        'channel_idx': {
-            'base': 'Channel: {value}',
-            'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
-            'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
-        },
-        'client_tenure_years': {
-            'base': '{value:.0f} years with us',
-            'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
-            'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
-        },
-        'client_tenure': {
-            'base': '{value:.1f} years with us',
-            'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
-            'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
-        },
-        'hist_': {
-            'base': 'Recent purchase history: {value}',
-            'context': 'strong engagement pattern',
-            'action': 'Build on existing relationship'
-        },
-        'last_1': {
-            'base': 'Most recent product: {value}',
-            'context': 'active client engagement',
-            'action': 'Natural product progression'
-        },
-        'last_2': {
-            'base': 'Previous product: {value}',
-            'context': 'diverse product portfolio',
-            'action': 'Complement existing holdings'
-        },
-        'freq_': {
-            'base': 'Purchase frequency: {value}',
-            'context': 'consistent engagement',
-            'action': 'Leverage loyalty'
-        },
-        'wc_assetmix_annuity': {
-            'base': 'Annuity allocation: ${value:,.0f}',
-            'context': 'income-focused strategy',
-            'action': 'Expand retirement income solutions'
-        },
-        'face_amt': {
-            'base': 'Face amount: ${value:,.0f}',
-            'context': 'significant coverage',
-            'action': 'Review coverage adequacy'
-        },
-        'cash_val_amt': {
-            'base': 'Cash value: ${value:,.0f}',
-            'context': 'accumulated value',
-            'action': 'Optimize cash value growth'
-        },
-        'branchoffice_code': {
-            'base': 'Branch office: {value}',
-            'context': 'local market presence',
-            'action': 'Leverage local expertise'
-        },
-        'agent_segment': {
-            'base': 'Agent segment: {value}',
-            'context': 'specialized advisory',
-            'action': 'Align with segment expertise'
-        },
-        'client_seg': {
-            'base': 'Client segment: {value}',
-            'context': 'targeted service tier',
-            'action': 'Customize approach to segment'
-        },
-        'client_seg_1': {
-            'base': 'Client segment level 1: {value}',
-            'context': 'refined segmentation',
-            'action': 'Tailor recommendations'
-        },
-        # New features from cell 4
-        'first_acct_val_amt': {
-            'base': 'First policy account value: ${value:,.0f}',
-            'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
-            'action': 'Discuss portfolio diversification'
-        },
-        'first_face_amt': {
-            'base': 'First policy face amount: ${value:,.0f}',
-            'context': 'significant coverage',
-            'action': 'Review coverage adequacy'
-        },
-        'first_cash_val_amt': {
-            'base': 'First policy cash value: ${value:,.0f}',
-            'context': 'accumulated value',
-            'action': 'Optimize cash value growth'
-        },
-        'stock_allocation_ratio': {
-            'base': 'Stock allocation: {value:.1%}',
-            'context': 'equity-focused portfolio',
-            'action': 'Position growth products'
-        },
-        'bond_allocation_ratio': {
-            'base': 'Bond allocation: {value:.1%}',
-            'context': 'fixed-income focus',
-            'action': 'Balance with growth opportunities'
-        },
-        'annuity_allocation_ratio': {
-            'base': 'Annuity allocation: {value:.1%}',
-            'context': 'income-focused strategy',
-            'action': 'Expand retirement income solutions'
-        },
-        'mutual_fund_allocation_ratio': {
-            'base': 'Mutual fund allocation: {value:.1%}',
-            'context': 'diversified investment approach',
-            'action': 'Explore additional diversification'
-        },
-        'age_at_first_policy': {
-            'base': 'Age at first policy: {value:.0f}',
-            'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
-            'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
-        },
-        'years_to_second_policy': {
-            'base': lambda v: 'First policy client' if v == 0 or v == 0.0 else f'Time to second policy: {v:.1f} years',
-            'context': lambda v: 'new client opportunity' if v == 0 or v == 0.0 else ('active engagement' if v < 3 else 'strategic planning' if v < 10 else 'long-term relationship'),
-            'action': lambda v: 'Build initial relationship' if v == 0 or v == 0.0 else ('Build on engagement momentum' if v < 3 else 'Deepen relationship')
-        },
-        'season_of_first_policy': {
-            'base': 'First policy season: {value}',
-            'context': 'strategic timing',
-            'action': 'Leverage planning cycles'
-        },
-        'first_product_category': {
-            'base': 'First product: {value}',
-            'context': 'current portfolio foundation',
-            'action': 'Build on existing relationship'
-        },
-        'wc_assetmix_bonds': {
-            'base': 'Bond allocation: ${value:,.0f}',
-            'context': 'fixed-income focus',
-            'action': 'Balance with growth opportunities'
-        },
-        'wc_assetmix_mutual_funds': {
-            'base': 'Mutual fund allocation: ${value:,.0f}',
-            'context': 'diversified investment approach',
-            'action': 'Explore additional diversification'
-        },
-        'wc_assetmix_deposits': {
-            'base': 'Deposit allocation: ${value:,.0f}',
-            'context': 'liquidity preference',
-            'action': 'Optimize cash deployment'
-        },
-        'wc_assetmix_other_assets': {
-            'base': 'Other assets: ${value:,.0f}',
-            'context': 'diversified portfolio',
-            'action': 'Comprehensive wealth planning'
-        }
-    }
-    
-    def generate_enhanced_talking_point(feature_name, feature_value, shap_value, id2prod=None):
-        """Generate enhanced talking point with context and action (from cell 17 of training notebook)"""
-        # Impact indicator
-        impact = "🔥" if abs(shap_value) > 0.1 else "⭐" if abs(shap_value) > 0.05 else ""
+    def load_context(self, context: mlflow.pyfunc.PythonModelContext):
+        """
+        Load model artifacts from MLflow context.
         
-        # Handle special cases for index features (map to actual values if possible)
-        if feature_name.endswith('_idx'):
-            # Try to map index to actual categorical value
-            base_feat = feature_name.replace('_idx', '')
-            # For product category, try to get actual product name
-            if base_feat == 'first_product_category' and id2prod is not None:
-                try:
-                    prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
-                    if prod_id > 0 and prod_id in id2prod:
-                        feature_value = id2prod[prod_id]
-                        feature_name = 'first_product_category'  # Use base name for template lookup
-                    else:
-                        return None  # Skip if can't map
-                except:
-                    return None  # Skip if conversion fails
-            else:
-                # For other index features, skip (not meaningful to clients)
-                return None
+        This method is called when the model is loaded. It should load:
+        - The LightGBM model from eda_smartlist.models.lgbm_model_hyperparameter_310126
+        - Product mappings (prod2id, id2prod)
+        - Label mappings
+        - Categorical feature mappings
+        - Other artifacts needed for preprocessing
+        """
+        import lightgbm as lgb
+        import pickle
         
-        # Handle special cases for old sequence features (no longer in feature set, but keep for backward compatibility)
-        if feature_name.startswith('hist_'):
-            # Try to map to product name
-            if id2prod is not None:
-                try:
-                    prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
-                    if prod_id > 0 and prod_id in id2prod:
-                        feature_value = id2prod[prod_id]
-                    elif prod_id == 0:
-                        return None  # Skip zero/empty history
-                except:
-                    pass
-            template_dict = ENHANCED_TEMPLATES.get('hist_', None)
-        elif feature_name.startswith('freq_'):
-            # Skip zero frequencies
-            try:
-                freq_val = float(feature_value) if feature_value not in [None, ''] else 0
-                if freq_val == 0:
-                    return None
-            except:
-                pass
-            template_dict = ENHANCED_TEMPLATES.get('freq_', None)
-        elif feature_name in ['last_1', 'last_2']:
-            # Try to map product ID to name
-            if id2prod is not None:
-                try:
-                    prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
-                    if prod_id > 0 and prod_id in id2prod:
-                        feature_value = id2prod[prod_id]
-                    elif prod_id == 0:
-                        return None  # Skip zero/empty
-                except:
-                    pass
-            template_dict = ENHANCED_TEMPLATES.get(feature_name, None)
-        else:
-            # Find matching template
-            template_dict = None
-            for template_key in ENHANCED_TEMPLATES:
-                if template_key in feature_name or feature_name.startswith(template_key):
-                    template_dict = ENHANCED_TEMPLATES[template_key]
-                    break
+        if context is None:
+            raise ValueError("MLflow context is required to load model artifacts")
         
-        if not template_dict:
-            # Skip index features and other non-meaningful features
-            if feature_name.endswith('_idx') or feature_name in ['seq_len', 'unique_prior', 'num_switches']:
-                return None
-            # Fallback to simple format
-            return f"{impact} {feature_name}: {feature_value} (impact: {shap_value:+.3f})"
+        # Get artifacts directory from context
+        artifacts_dir = context.artifacts.get("artifacts_path") or context.artifacts.get("model_path")
         
-        # Format base message
+        # Load LightGBM model from Unity Catalog
+        model_uri = "models:/eda_smartlist.models.lgbm_model_hyperparameter_310126/1"
         try:
-            template = template_dict['base']
-            
-            # Handle None, NaN, or empty values
-            if feature_value is None or feature_value == '' or (isinstance(feature_value, float) and np.isnan(feature_value)):
-                return None
-            
-            # Convert to numeric if needed (for lambda functions and formatting)
-            original_value = feature_value
-            if isinstance(feature_value, str) and feature_value not in ['N/A', 'UNKNOWN']:
-                try:
-                    feature_value = float(feature_value)
-                except:
-                    # Keep as string if conversion fails
-                    pass
-            
-            # Check if template is a callable (lambda function)
-            if callable(template):
-                message = template(feature_value)
-            elif '{value' in template:
-                # String template with format placeholders
-                message = template.format(value=feature_value)
-            else:
-                # Plain string template
-                message = template
+            self.model = mlflow.lightgbm.load_model(model_uri)
+            print(f"✓ Loaded LightGBM model from {model_uri}")
         except Exception as e:
-            # If formatting fails, skip this feature
-            return None
+            print(f"Could not load LightGBM model from {model_uri}: {e}")
+            raise
         
-        # Add context
-        context = template_dict.get('context')
-        if context:
-            if callable(context):
-                try:
-                    context_str = context(feature_value)
-                except:
-                    context_str = None
-            else:
-                context_str = context
+        # Load other artifacts
+        artifacts_file = os.path.join(artifacts_dir, "artifacts.pkl")
+        if os.path.exists(artifacts_file):
+            with open(artifacts_file, 'rb') as f:
+                artifacts = pickle.load(f)
+                self.prod2id = artifacts.get('prod2id')
+                self.id2prod = artifacts.get('id2prod')
+                self.label_map = artifacts.get('label_map')
+                self.num_classes = artifacts.get('num_classes', 7)
+                self.categorical_mappings = artifacts.get('categorical_mappings')
+                self.feature_cols = artifacts.get('feature_cols')
+                print(f"✓ Loaded artifacts from {artifacts_file}")
+        else:
+            raise FileNotFoundError(f"Artifacts file not found at {artifacts_file}. Ensure artifacts.pkl is in artifacts.")
+        
+        # Validate required artifacts
+        if self.prod2id is None or self.id2prod is None:
+            raise ValueError("prod2id and id2prod mappings are required")
+        if self.label_map is None:
+            raise ValueError("label_map is required")
+        if self.feature_cols is None:
+            # Use default feature columns from cell 4
+            self.feature_cols = get_feature_columns()
+            print(f"✓ Using default feature columns: {len(self.feature_cols)} features")
+    
+    def _load_data_from_table(
+        self, 
+        spark: SparkSession,
+        table_name: str = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics",
+        branchoffice_code: Optional[str] = None,
+        business_month: Optional[int] = None
+    ) -> DataFrame:
+        """
+        Load data from Unity Catalog table.
+        
+        Args:
+            spark: SparkSession
+            table_name: Name of the table to load from
+            branchoffice_code: Optional branch office code filter
+            business_month: Optional business month filter
             
-            if context_str:
-                message += f" ({context_str})"
+        Returns:
+            Spark DataFrame with raw data
+        """
+        df_raw = spark.table(table_name)
         
-        # Add action
-        action = template_dict.get('action')
-        if action:
-            if callable(action):
-                try:
-                    action_str = action(feature_value)
-                except:
-                    action_str = None
-            else:
-                action_str = action
+        # Apply filters if provided
+        if branchoffice_code:
+            df_raw = df_raw.filter(F.col("branchoffice_code") == branchoffice_code)
+        
+        if business_month:
+            df_raw = df_raw.filter(F.col("business_month") <= business_month)
+        
+        return df_raw
+    
+    def _preprocess_data(
+        self,
+        spark: SparkSession,
+        df_raw: DataFrame,
+        prod2id: Dict[str, int],
+        num_classes: int,
+        categorical_mappings: Optional[Dict] = None
+    ) -> pd.DataFrame:
+        """
+        Preprocess raw data following the exact steps from cell 4 of training notebook.
+        
+        This method processes SINGLE-POLICY CLIENTS ONLY. It treats the single policy
+        as the "first policy" and calculates years_to_second_policy as the time elapsed
+        since the first policy registration (current_timestamp - first_register_ts),
+        matching the training logic which uses timestamps.
+        
+        Args:
+            spark: SparkSession
+            df_raw: Raw Spark DataFrame
+            prod2id: Product to ID mapping
+            num_classes: Number of product classes
+            categorical_mappings: Categorical feature mappings
             
-            if action_str:
-                message += f" → {action_str}"
+        Returns:
+            Preprocessed Pandas DataFrame ready for prediction
+        """
+        # Use the preprocess_for_prediction function from final_preprocessor
+        # Hardcode single_policy_only=True since this model is for single-policy clients only
+        pred_pd, feature_cols, updated_categorical_mappings = preprocess_for_prediction(
+            spark=spark,
+            df_raw=df_raw,
+            prod2id=prod2id,
+            num_classes=num_classes,
+            categorical_cols=None,  # Will use defaults
+            categorical_mappings=categorical_mappings,
+            branchoffice_code=None,  # Already filtered in _load_data_from_table
+            business_month=None,  # Already filtered in _load_data_from_table
+            single_policy_only=True  # Always True for this model
+        )
         
-        return f"{impact} {message}"
+        # Update feature columns if needed
+        if self.feature_cols is None:
+            self.feature_cols = feature_cols
+        
+        # Update categorical mappings
+        if updated_categorical_mappings:
+            self.categorical_mappings = updated_categorical_mappings
+        
+        return pred_pd
     
-    # Generate talking points for the sample
-    print("Generating talking points...")
-    id2prod = python_model.id2prod
-    
-    # Create a lookup dictionary for faster access to predictions
-    predictions_dict = predictions.set_index('cont_id')[['pred_product', 'pred_prob']].to_dict('index')
-    
-    # Get top features for each sample
-    talking_points_list = []
-    print(f"  Processing {len(pred_pd_sample):,} samples...")
-    
-    for idx in range(len(pred_pd_sample)):
-        if (idx + 1) % 10000 == 0:
-            print(f"    Processed {idx + 1:,} / {len(pred_pd_sample):,} samples...")
+    def predict(
+        self, 
+        context: mlflow.pyfunc.PythonModelContext, 
+        model_input: Any
+    ) -> pd.DataFrame:
+        """
+        Make predictions on input data for SINGLE-POLICY CLIENTS ONLY.
         
-        cont_id = pred_pd_sample.iloc[idx]['cont_id']
+        Args:
+            context: MLflow context
+            model_input: Can be:
+                - Spark DataFrame (will be used directly, must contain single-policy clients)
+                - Pandas DataFrame (will be converted to Spark, must contain single-policy clients)
+                - Dict with parameters (will load from table and filter to single-policy clients)
+                
+        Returns:
+            Pandas DataFrame with predictions
+        """
+        spark = SparkSession.builder.getOrCreate()
         
-        # Get prediction info from dictionary (faster than repeated filtering)
-        pred_info = predictions_dict.get(cont_id, {'pred_product': 'UNKNOWN', 'pred_prob': 0.0})
-        pred_product = pred_info['pred_product']
-        pred_prob = pred_info['pred_prob']
-        
-        # Get feature contributions (SHAP values)
-        shap_contributions = shap_array[idx]
-        
-        # Ensure shap_contributions is 1D array
-        if isinstance(shap_contributions, np.ndarray) and shap_contributions.ndim > 1:
-            shap_contributions = shap_contributions.flatten()
-        
-        # Get top 5 features
-        feature_contributions = list(zip(feature_cols, shap_contributions))
-        # Sort by absolute SHAP value
-        feature_contributions.sort(key=lambda x: abs(float(x[1])), reverse=True)
-        top_features = feature_contributions[:5]
-        
-        # Generate talking points
-        valid_talking_points = []
-        for rank, (feat_name, shap_val) in enumerate(top_features, 1):
+        # Handle different input types
+        if isinstance(model_input, dict):
+            # If input is a dict, treat it as parameters for loading from table
+            table_name = model_input.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+            branchoffice_code = model_input.get("branchoffice_code")
+            business_month = model_input.get("business_month")
+            df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+        elif isinstance(model_input, pd.DataFrame):
+            # Check if this is a dict that was converted to DataFrame by MLflow
+            expected_dict_keys = {"table_name", "branchoffice_code", "business_month"}
+            if set(model_input.columns).issubset(expected_dict_keys) and len(model_input.columns) <= 3:
+                # This is likely a dict that was converted to DataFrame
+                if len(model_input) > 0:
+                    row_dict = model_input.iloc[0].to_dict()
+                    table_name = row_dict.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                    branchoffice_code = row_dict.get("branchoffice_code")
+                    business_month = row_dict.get("business_month")
+                else:
+                    table_name = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
+                    branchoffice_code = None
+                    business_month = None
+                df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+            else:
+                # Convert Pandas to Spark DataFrame (actual data)
+                df_raw = spark.createDataFrame(model_input)
+        elif isinstance(model_input, DataFrame):
+            # Check if this is a dict that was converted to Spark DataFrame
+            expected_dict_keys = {"table_name", "branchoffice_code", "business_month"}
+            if set(model_input.columns).issubset(expected_dict_keys) and len(model_input.columns) <= 3:
+                # This is likely a dict that was converted to DataFrame
+                row = model_input.first().asDict() if model_input.count() > 0 else {}
+                table_name = row.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                branchoffice_code = row.get("branchoffice_code")
+                business_month = row.get("business_month")
+                df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+            else:
+                df_raw = model_input
+        else:
+            # Try to convert to dict first
             try:
-                feat_value = pred_pd_sample.iloc[idx][feat_name]
-                tp = generate_enhanced_talking_point(feat_name, feat_value, shap_val, id2prod)
-                if tp is not None:
-                    valid_talking_points.append(tp)
-            except Exception as e:
-                # Skip this feature if there's an error
-                continue
+                if hasattr(model_input, 'to_dict'):
+                    model_input_dict = model_input.to_dict()
+                    if isinstance(model_input_dict, dict):
+                        table_name = model_input_dict.get("table_name", "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics")
+                        branchoffice_code = model_input_dict.get("branchoffice_code")
+                        business_month = model_input_dict.get("business_month")
+                        df_raw = self._load_data_from_table(spark, table_name, branchoffice_code, business_month)
+                    else:
+                        df_raw = spark.createDataFrame(model_input)
+                else:
+                    df_raw = spark.createDataFrame(model_input)
+            except:
+                df_raw = spark.createDataFrame(model_input)
         
-        talking_points_list.append({
-            'cont_id': cont_id,
-            'pred_product': pred_product,
-            'pred_prob': pred_prob,
-            'talking_point_1': valid_talking_points[0] if len(valid_talking_points) > 0 else None,
-            'talking_point_2': valid_talking_points[1] if len(valid_talking_points) > 1 else None,
-            'talking_point_3': valid_talking_points[2] if len(valid_talking_points) > 2 else None,
-            'talking_point_4': valid_talking_points[3] if len(valid_talking_points) > 3 else None,
-            'talking_point_5': valid_talking_points[4] if len(valid_talking_points) > 4 else None,
-        })
-    
-    # Create DataFrame with talking points
-    talking_points_df = pd.DataFrame(talking_points_list)
-    
-    # Merge talking points back to predictions
-    # For the sample that has talking points
-    predictions_with_tp = predictions.merge(talking_points_df[['cont_id', 'talking_point_1', 'talking_point_2', 
-                                                               'talking_point_3', 'talking_point_4', 'talking_point_5']], 
-                                           on='cont_id', how='left')
-    
-    # For records without talking points (not in sample), ensure columns exist and are properly typed
-    for col in ['talking_point_1', 'talking_point_2', 'talking_point_3', 'talking_point_4', 'talking_point_5']:
-        if col not in predictions_with_tp.columns:
-            predictions_with_tp[col] = None
-        # Convert to object dtype to handle None values properly
-        predictions_with_tp[col] = predictions_with_tp[col].astype('object')
-        # Replace NaN with None (using fillna with value parameter)
-        predictions_with_tp.loc[predictions_with_tp[col].isna(), col] = None
-    
-    print(f"✓ Generated talking points for {len(talking_points_df):,} records")
-    print(f"\n  Sample talking points:")
-    sample_tp = talking_points_df.head(3)
-    for _, row in sample_tp.iterrows():
-        print(f"\n  Client: {row['cont_id']}")
-        print(f"    Product: {row['pred_product']}")
-        print(f"    Probability: {row['pred_prob']:.3f}")
-        for i in range(1, 6):
-            tp = row.get(f'talking_point_{i}')
-            if pd.notna(tp) and tp is not None:
-                print(f"    {i}. {tp}")
-    
-    # Update predictions with talking points
-    predictions = predictions_with_tp
-    
-except Exception as e:
-    print(f"⚠ Could not generate talking points: {e}")
-    import traceback
-    traceback.print_exc()
-    print("Continuing without talking points...")
-
-# ============================================================================
-# STEP 5: Save Results with Talking Points
-# ============================================================================
-
-print("\n" + "=" * 80)
-print("Saving Results with Talking Points")
-print("=" * 80)
-
-try:
-    # Add extra columns from wealth_management_client_metrics on cont_id
-    extra_cols = [
-        "axa_party_id","cont_id", "psn_age", "client_seg", "client_seg_1", "aum_band", "channel",
-        "division_name", "branch_name", "business_city", "business_state_cod", "register_date"
-    ]
-    df_metrics = spark.table("dl_tenants_daas.us_wealth_management.wealth_management_client_metrics") \
-        .select(*extra_cols).dropDuplicates(["cont_id"])
-    
-    # Add client_tenure as years between current date and register_date
-    from pyspark.sql.functions import current_date, datediff, col
-    df_metrics = df_metrics.withColumn(
-        "client_tenure",
-        (datediff(current_date(), col("register_date")) / 365.25)
-    )
-    
-    # Convert predictions to Spark DataFrame if not already
-    spark_df = spark.createDataFrame(predictions)
-    
-    # Join on cont_id
-    spark_df = spark_df.join(df_metrics, on="cont_id", how="left")
-    
-    output_table = "eda_smartlist.us_wealth_management_smartlist.lgbm_hyper_experiment"
-    spark_df.write.mode("overwrite").saveAsTable(output_table)
-    print(f"✓ Results saved to table: {output_table}")
-except Exception as e:
-    print(f"⚠ Could not save results: {e}")
-    import traceback
-    traceback.print_exc()
-
-print("\n" + "=" * 80)
-print("Complete!")
-print("=" * 80)
+        # Ensure we have required artifacts
+        if self.prod2id is None or self.id2prod is None:
+            raise ValueError("Model artifacts not loaded. Ensure load_context was called properly.")
+        
+        # Preprocess data using cell 4 logic (single-policy clients only)
+        pred_pd = self._preprocess_data(
+            spark=spark,
+            df_raw=df_raw,
+            prod2id=self.prod2id,
+            num_classes=self.num_classes,
+            categorical_mappings=self.categorical_mappings
+        )
+        
+        # Make predictions
+        if self.model is None:
+            raise ValueError("Model not loaded. Ensure load_context was called properly.")
+        
+        pred_probs = self.model.predict(pred_pd[self.feature_cols])
+        pred_class_ids = np.argmax(pred_probs, axis=1)
+        
+        # Convert predictions to product names
+        # Handle label_map if available
+        if self.label_map:
+            inv_label_map = {v: k for k, v in self.label_map.items()}
+            final_id2prod = {
+                model_id: self.id2prod[original_id]
+                for model_id, original_id in inv_label_map.items()
+            }
+        else:
+            # Use id2prod directly if label_map is not available
+            final_id2prod = self.id2prod.copy()
+        
+        pred_pd["pred_class_id"] = pred_class_ids
+        pred_pd["pred_product"] = pred_pd["pred_class_id"].apply(
+            lambda x: final_id2prod.get(x, self.id2prod.get(x, "UNKNOWN"))
+        )
+        
+        # Add probability columns
+        num_classes_pred = pred_probs.shape[1]
+        for i in range(num_classes_pred):
+            pred_pd[f"prob_{i}"] = pred_probs[:, i]
+        pred_pd["pred_prob"] = pred_pd.apply(
+            lambda r: r[f"prob_{r['pred_class_id']}"], axis=1
+        )
+        
+        # Return relevant columns
+        return pred_pd[["cont_id", "pred_class_id", "pred_product", "pred_prob"] + 
+                       [f"prob_{i}" for i in range(num_classes_pred)]]
