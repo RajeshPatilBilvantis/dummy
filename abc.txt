@@ -1,198 +1,170 @@
-"""
-Validation script for LightGBM next‑product model.
-
-Goal:
-- Take a random sample of ~5,000 multi‑policy clients (clients with 2+ policies),
-  use ONLY their first‑policy features as model input, and compare the model's
-  predicted next product to the ACTUAL second product.
-
-Notes on methodology
---------------------
-- This is a good way to *validate the model + preprocessing logic end‑to‑end*,
-  because it mirrors the training setup:
-    - Input features: first policy + client/asset features
-    - Target: second product category
-- It complements the train/val/test split already done in
-  `Data extraction and model training.ipynb` by:
-    - Re‑using the same preprocessing logic from `final_preprocessor.py`
-    - Loading the registered MLflow model
-    - Producing a labeled validation table you can inspect in SQL/BI tools
-
-Implementation details
-----------------------
-- We re‑use `preprocess_for_training` from `final_preprocessor.py` to:
-    - Filter to clients with 2+ policies
-    - Build first/second policy pairs
-    - Engineer all features exactly as in training (including
-      years_to_second_policy = second - first)
-- We then:
-    - Concatenate train/val/test splits into a single pool
-    - Sample 5,000 rows at random
-    - Run predictions using the registered LightGBM model
-    - Map integer labels back to product categories via `id2prod`
-    - Save a Spark table with: cont_id, true product, predicted product, etc.
-"""
-
 import mlflow
-import mlflow.lightgbm
-import numpy as np
-import pandas as pd
-
+from pyspark.sql import functions as F, Window
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
 
-from final_preprocessor import preprocess_for_training
+spark = SparkSession.builder.getOrCreate()
 
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
+# ------------------------------------------------------------------------------
+# CONFIG
+# ------------------------------------------------------------------------------
 CATALOG_NAME = "eda_smartlist"
 SCHEMA_NAME = "models"
-MODEL_NAME = "lgbm_model_hyperparameter_310126"
+MODEL_NAME = "lgbm_hyperparameter_preprocess_and_predict_model"
 MODEL_VERSION = "1"
 
 MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
 
 TABLE_NAME = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
-
-# Optional filters (align with production if needed)
-BRANCHOFFICE_CODE = "83"  # or None
-BUSINESS_MONTH = None     # set to an int (e.g., 202501) to restrict by month, or keep None
-
-# Validation sampling
+BRANCHOFFICE_CODE = "83"      # or None
+BUSINESS_MONTH = None         # e.g. 202501 or None
 VALIDATION_SAMPLE_SIZE = 5000
 RANDOM_SEED = 42
 
-# Output table for detailed comparison
-VALIDATION_OUTPUT_TABLE = (
+OUTPUT_TABLE = (
     "eda_smartlist.us_wealth_management_smartlist."
-    "ML_validation_multi_policy_first_to_second"
+    "ML_validation_first_to_second_using_pyfunc"
 )
 
-
 print("=" * 80)
-print("Starting Validation: First Policy → Second Product")
+print("Validation using lgbm_hyperparameter_preprocess_and_predict_model")
 print("=" * 80)
 
-spark = SparkSession.builder.getOrCreate()
-
-# ----------------------------------------------------------------------
-# 1. Load raw data (same source as training / final_pipeline)
-# ----------------------------------------------------------------------
-print("\nLoading raw data from Unity Catalog table...")
+# ------------------------------------------------------------------------------
+# 1) Load and filter raw data
+# ------------------------------------------------------------------------------
 df_raw = spark.table(TABLE_NAME)
 
 if BRANCHOFFICE_CODE:
     df_raw = df_raw.filter(F.col("branchoffice_code") == BRANCHOFFICE_CODE)
-    print(f"  ✓ Filtered by branchoffice_code = {BRANCHOFFICE_CODE}")
+    print(f"✓ Filtered by branchoffice_code = {BRANCHOFFICE_CODE}")
 
 if BUSINESS_MONTH:
     df_raw = df_raw.filter(F.col("business_month") == BUSINESS_MONTH)
-    print(f"  ✓ Filtered by business_month = {BUSINESS_MONTH}")
+    print(f"✓ Filtered by business_month = {BUSINESS_MONTH}")
 
-# Keep only Active policies to match training
 df_raw = df_raw.filter(F.col("policy_status") == "Active")
-print(f"  ✓ Filtered to Active policies only")
-print(f"  Rows after filtering: {df_raw.count():,}")
+print(f"✓ Filtered to Active policies only, rows: {df_raw.count():,}")
 
-# ----------------------------------------------------------------------
-# 2. Preprocess for training (2+ policy clients, first→second mapping)
-# ----------------------------------------------------------------------
-print("\nPreprocessing data for training-style first→second mapping...")
-
-(
-    train_pd,
-    val_pd,
-    test_pd,
-    feature_cols,
-    prod2id,
-    id2prod,
-    label_map,
-    categorical_mappings,
-    num_classes,
-) = preprocess_for_training(
-    spark=spark,
-    df_raw=df_raw,
-    sample_fraction=None,  # use full filtered data
-    random_seed=RANDOM_SEED,
+# ------------------------------------------------------------------------------
+# 2) Create product_category (same mapping as training/final_pipeline)
+# ------------------------------------------------------------------------------
+df_raw = df_raw.withColumn(
+    "product_category",
+    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+    .when(F.col("sub_product_level_2").isin(
+        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
+        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
+        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
+    ), "LIFE_INSURANCE")
+    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
+        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
+    ), "RETIREMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%403B%")) |
+        (F.col("sub_product_level_2").like("%401%")) |
+        (F.col("sub_product_level_2").like("%IRA%")) |
+        (F.col("sub_product_level_2").like("%SEP%")),
+        "RETIREMENT"
+    )
+    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+    .when(F.col("sub_product_level_1").isin(
+        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
+        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
+        "ADVISORY", "CASH SOLICITOR"
+    ), "INVESTMENT")
+    .when(
+        (F.col("sub_product_level_2").like("%Investment%")) |
+        (F.col("sub_product_level_2").like("%Brokerage%")) |
+        (F.col("sub_product_level_2").like("%Advisory%")),
+        "INVESTMENT"
+    )
+    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+    .when(
+        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
+        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+        "NETWORK_PRODUCTS"
+    )
+    .when(
+        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
+        "DISABILITY"
+    )
+    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+    .otherwise("OTHER")
 )
 
-print("  ✓ Preprocessing complete")
-print(f"    Train shape: {train_pd.shape}")
-print(f"    Val shape:   {val_pd.shape}")
-print(f"    Test shape:  {test_pd.shape}")
-print(f"    Num classes: {num_classes}")
+# ------------------------------------------------------------------------------
+# 3) Identify first and second policies per cont_id (clients with >= 2)
+# ------------------------------------------------------------------------------
+df_events = df_raw.withColumn("register_ts", F.to_timestamp("register_date"))
 
-# Combine all splits into a single pool of labeled examples
-full_pd = pd.concat([train_pd, val_pd, test_pd], ignore_index=True)
-print(f"    Combined pool size: {len(full_pd):,} rows")
+w = Window.partitionBy("cont_id").orderBy("register_ts")
+df_events = df_events.withColumn("event_idx", F.row_number().over(w))
 
-# ----------------------------------------------------------------------
-# 3. Sample ~5,000 validation records
-# ----------------------------------------------------------------------
-n_total = len(full_pd)
-n_sample = min(VALIDATION_SAMPLE_SIZE, n_total)
+wc = Window.partitionBy("cont_id")
+df_events = df_events.withColumn("total_policies", F.count("*").over(wc))
 
-print(f"\nSampling {n_sample:,} validation rows (from {n_total:,})...")
-sample_pd = full_pd.sample(
-    n=n_sample, random_state=RANDOM_SEED, replace=False
-).reset_index(drop=True)
+df_multi = df_events.filter(F.col("total_policies") >= 2)
+print(f"✓ Multi‑policy rows (cont_id with ≥2 policies): {df_multi.count():,}")
 
-# ----------------------------------------------------------------------
-# 4. Load registered LightGBM model from MLflow
-# ----------------------------------------------------------------------
-print("\nLoading registered LightGBM model from MLflow...")
-model = mlflow.lightgbm.load_model(MODEL_URI)
-print(f"  ✓ Model loaded from {MODEL_URI}")
+# First policy row per client (model input)
+df_first = df_multi.filter(F.col("event_idx") == 1).drop("event_idx", "total_policies")
 
-# ----------------------------------------------------------------------
-# 5. Run predictions using ONLY first‑policy feature set
-# ----------------------------------------------------------------------
-print("\nRunning predictions on validation sample...")
-
-X_val = sample_pd[feature_cols]
-y_true_ids = sample_pd["label"].values
-
-y_pred_proba = model.predict(X_val)
-y_pred_ids = np.argmax(y_pred_proba, axis=1)
-
-# Map label IDs back to product categories
-y_true_prod = [id2prod.get(int(lbl), "UNKNOWN") for lbl in y_true_ids]
-y_pred_prod = [id2prod.get(int(lbl), "UNKNOWN") for lbl in y_pred_ids]
-
-# ----------------------------------------------------------------------
-# 6. Build validation result DataFrame
-# ----------------------------------------------------------------------
-print("\nBuilding validation comparison DataFrame...")
-
-result_pd = pd.DataFrame(
-    {
-        "cont_id": sample_pd["cont_id"],
-        "true_label_id": y_true_ids,
-        "true_product_category": y_true_prod,
-        "pred_label_id": y_pred_ids,
-        "pred_product_category": y_pred_prod,
-    }
+# Second policy product per client (ground truth label)
+df_second = df_multi.filter(F.col("event_idx") == 2).select(
+    "cont_id",
+    F.col("product_category").alias("original_second_product_category")
 )
 
-# Attach a few key first‑policy features for context (optional)
-context_cols = [
-    "first_acct_val_amt",
-    "first_face_amt",
-    "first_cash_val_amt",
-    "wc_total_assets",
-    "psn_age",
-    "age_at_first_policy",
-    "years_to_second_policy",
-]
-for col in context_cols:
-    if col in sample_pd.columns:
-        result_pd[col] = sample_pd[col]
+# ------------------------------------------------------------------------------
+# 4) Sample 5,000 clients and keep only their FIRST policy rows
+# ------------------------------------------------------------------------------
+distinct_clients = df_first.select("cont_id").dropDuplicates()
+n_total_clients = distinct_clients.count()
+n_sample = min(VALIDATION_SAMPLE_SIZE, n_total_clients)
 
-# Basic accuracy metrics
-accuracy = (result_pd["true_label_id"] == result_pd["pred_label_id"]).mean()
-print(f"\nValidation Accuracy on sampled {n_sample:,} rows: {accuracy:.4f}")
+print(f"Total eligible clients: {n_total_clients:,}")
+print(f"Sampling {n_sample:,} clients for validation...")
 
-display(result_pd)
+sampled_cont_ids = distinct_clients.orderBy(F.rand(seed=RANDOM_SEED)).limit(n_sample)
+df_first_sample = df_first.join(sampled_cont_ids, on="cont_id", how="inner")
+
+print(f"Rows in first‑policy sample: {df_first_sample.count():,}")
+
+# ------------------------------------------------------------------------------
+# 5) Load pyfunc model and run predictions on FIRST‑policy only
+# ------------------------------------------------------------------------------
+print("\nLoading pyfunc model and running predictions...")
+model = mlflow.pyfunc.load_model(MODEL_URI)
+print(f"✓ Model loaded from {MODEL_URI}")
+
+# Access the underlying PythonModel (same pattern as final_pipeline.py)
+python_model = model._model_impl.python_model
+
+# IMPORTANT: we pass ONLY the first-policy rows, so inside the model's
+# preprocess_for_prediction(single_policy_only=True) each cont_id appears
+# as having exactly 1 policy.
+predictions_pd = python_model.predict(None, df_first_sample)
+
+print("✓ Predictions completed")
+print(f"  Shape: {predictions_pd.shape}")
+
+# ------------------------------------------------------------------------------
+# 6) Attach original second product category and save
+# ------------------------------------------------------------------------------
+pred_spark = spark.createDataFrame(predictions_pd)
+
+# Join predicted next product with the true second product
+result_spark = pred_spark.join(df_second, on="cont_id", how="left")
+
+# At this point you have:
+# - pred_spark['pred_product']  (model output)
+# - df_second['original_second_product_category'] (ground truth)
+# in the same Spark DataFrame.
+result_spark.write.mode("overwrite").saveAsTable(OUTPUT_TABLE)
+print(f"✓ Validation results saved to: {OUTPUT_TABLE}")
