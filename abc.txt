@@ -656,9 +656,20 @@ def run_validation():
     # Convert to Spark DataFrame for Databricks exploration
     spark_df = spark.createDataFrame(features_pd)
 
-    spark_df
-
-if __name__ == "__main__":
-    run_validation()
+    return spark_df
 
 
+
+=====================================
+
+
+
+
+df_val=run_validation()
+result_spark = spark.createDataFrame
+
+MlflowException: The following failures occurred while downloading one or more artifacts from dbfs:/databricks/mlflow-tracking/3285035378792271/5326ef06b1244540877f0ccefc10ea75/artifacts:
+##### File artifacts #####
+404 Client Error: The specified blob does not exist. for url: https://dbstoragezkstig75rk7f4.blob.core.windows.net/jobs/8916084915459926/mlflow-tracking/3285035378792271/5326ef06b1244540877f0ccefc10ea75/artifacts/artifacts?sig=yrNrs89ZGUIN8V%2FGWNOW4K6eak3s7m3FFciMEI5JqI4%3D&se=2026-02-03T11%3A40%3A13Z&sv=2019-02-02&spr=https&sp=r&sr=b. Response text: <?xml version="1.0" encoding="utf-8"?><Error><Code>BlobNotFound</Code><Message>The specified blob does not exist.
+RequestId:ff828e23-401e-0083-13f9-94d6fd000000
+Time:2026-02-03T10:40:13.4172971Z</Message></Error>
