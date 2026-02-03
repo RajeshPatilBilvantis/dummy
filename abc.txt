@@ -1,300 +1,664 @@
-from pyspark.sql import functions as F, Window
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+import os
+import pickle
+from typing import Dict, Any
+
+import mlflow
+import numpy as np
 import pandas as pd
-import lightgbm as lgb
-from sklearn.metrics import f1_score, accuracy_score, classification_report, confusion_matrix
+from mlflow.tracking import MlflowClient
+from pyspark.sql import SparkSession, Window
+from pyspark.sql import functions as F
+from pyspark.sql.types import IntegerType
 
-# ------------- PARAMETERS -------------
-SAMPLE_FRACTION = 1   # set None to use full data
-TRAIN_FRAC = 0.8
-VAL_FRAC = 0.1
-TEST_FRAC = 0.1
-RANDOM_SEED = 42
 
-# LightGBM training params
-LGB_PARAMS = {
-    "objective": "multiclass",
-    "num_class": 6,               # will be set dynamically
-    "metric": "multi_logloss",
-    "boosting_type": "gbdt",
-    "learning_rate": 0.05,
-    "num_leaves": 64,
-    "min_data_in_leaf": 50,
-    "feature_fraction": 0.8,
-    "subsample": 0.8,
-    "subsample_freq": 1,
-    "lambda_l2": 2.0,
-    "verbosity": -1
-}
-NUM_BOOST_ROUND = 2000
-EARLY_STOP = 50
+# ============================================================================
+# STANDALONE PREPROCESSING HELPERS (duplicated for independence)
+# ============================================================================
 
-# ------------- 1) Create product_category -------------
-df_raw = df_raw.withColumn(
-    "product_category",
-    F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_1").isin("VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"), "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
-    .when(F.col("sub_product_level_2").isin(
-        "VARIABLE UNIVERSAL LIFE", "WHOLE LIFE", "UNIVERSAL LIFE",
-        "INDEX UNIVERSAL LIFE", "TERM PRODUCT", "VARIABLE LIFE",
-        "SURVIVORSHIP WHOLE LIFE", "MONY PROTECTIVE PRODUCT"
-    ), "LIFE_INSURANCE")
-    .when(F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"), "RETIREMENT")
-    .when(F.col("sub_product_level_1").isin(
-        "EQUIVEST", "RETIREMENT 401K", "ACCUMULATOR",
-        "RETIREMENT CORNERSTONE", "SCS", "INVESTMENT EDGE"
-    ), "RETIREMENT")
-    .when(
-        (F.col("sub_product_level_2").like("%403B%")) |
-        (F.col("sub_product_level_2").like("%401%")) |
-        (F.col("sub_product_level_2").like("%IRA%")) |
-        (F.col("sub_product_level_2").like("%SEP%")),
-        "RETIREMENT"
+
+def create_product_category_column(df):
+    """
+    Create product_category column from prod_lob, sub_product_level_1, and sub_product_level_2.
+    Duplicated from training logic to keep this script self-contained.
+    """
+    return df.withColumn(
+        "product_category",
+        F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+        .when(
+            F.col("sub_product_level_1").isin(
+                "VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"
+            ),
+            "LIFE_INSURANCE",
+        )
+        .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+        .when(
+            F.col("sub_product_level_2").isin(
+                "VARIABLE UNIVERSAL LIFE",
+                "WHOLE LIFE",
+                "UNIVERSAL LIFE",
+                "INDEX UNIVERSAL LIFE",
+                "TERM PRODUCT",
+                "VARIABLE LIFE",
+                "SURVIVORSHIP WHOLE LIFE",
+                "MONY PROTECTIVE PRODUCT",
+            ),
+            "LIFE_INSURANCE",
+        )
+        .when(
+            F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"),
+            "RETIREMENT",
+        )
+        .when(
+            F.col("sub_product_level_1").isin(
+                "EQUIVEST",
+                "RETIREMENT 401K",
+                "ACCUMULATOR",
+                "RETIREMENT CORNERSTONE",
+                "SCS",
+                "INVESTMENT EDGE",
+            ),
+            "RETIREMENT",
+        )
+        .when(
+            (F.col("sub_product_level_2").like("%403B%"))
+            | (F.col("sub_product_level_2").like("%401%"))
+            | (F.col("sub_product_level_2").like("%IRA%"))
+            | (F.col("sub_product_level_2").like("%SEP%")),
+            "RETIREMENT",
+        )
+        .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+        .when(
+            F.col("sub_product_level_1").isin(
+                "INVESTMENT PRODUCT - DIRECT",
+                "INVESTMENT PRODUCT - BROKERAGE",
+                "INVESTMENT PRODUCT - ADVISORY",
+                "DIRECT",
+                "BROKERAGE",
+                "ADVISORY",
+                "CASH SOLICITOR",
+            ),
+            "INVESTMENT",
+        )
+        .when(
+            (F.col("sub_product_level_2").like("%Investment%"))
+            | (F.col("sub_product_level_2").like("%Brokerage%"))
+            | (F.col("sub_product_level_2").like("%Advisory%")),
+            "INVESTMENT",
+        )
+        .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+        .when(
+            (F.col("sub_product_level_1") == "NETWORK PRODUCTS")
+            | (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+            "NETWORK_PRODUCTS",
+        )
+        .when(
+            (F.col("prod_lob") == "OTHERS")
+            & (F.col("sub_product_level_1") == "HAS"),
+            "DISABILITY",
+        )
+        .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+        .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+        .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+        .otherwise("OTHER"),
     )
-    .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
-    .when(F.col("sub_product_level_1").isin(
-        "INVESTMENT PRODUCT - DIRECT", "INVESTMENT PRODUCT - BROKERAGE",
-        "INVESTMENT PRODUCT - ADVISORY", "DIRECT", "BROKERAGE",
-        "ADVISORY", "CASH SOLICITOR"
-    ), "INVESTMENT")
-    .when(
-        (F.col("sub_product_level_2").like("%Investment%")) |
-        (F.col("sub_product_level_2").like("%Brokerage%")) |
-        (F.col("sub_product_level_2").like("%Advisory%")),
-        "INVESTMENT"
+
+
+def add_asset_allocation_ratios(df):
+    """
+    Add asset allocation ratio features based on wealth metrics.
+    Duplicated from training logic to keep this script self-contained.
+    """
+    df = df.withColumn(
+        "stock_allocation_ratio",
+        F.col("wc_assetmix_stocks")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
     )
-    .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
-    .when(
-        (F.col("sub_product_level_1") == "NETWORK PRODUCTS") |
-        (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
-        "NETWORK_PRODUCTS"
+    df = df.withColumn(
+        "bond_allocation_ratio",
+        F.col("wc_assetmix_bonds")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
     )
-    .when(
-        (F.col("prod_lob") == "OTHERS") & (F.col("sub_product_level_1") == "HAS"),
-        "DISABILITY"
+    df = df.withColumn(
+        "annuity_allocation_ratio",
+        F.col("wc_assetmix_annuity")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
     )
-    .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
-    .when(F.col("prod_lob") == "OTHERS", "HEALTH")
-    .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
-    .otherwise("OTHER")
-)
+    df = df.withColumn(
+        "mutual_fund_allocation_ratio",
+        F.col("wc_assetmix_mutual_funds")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
+    )
+    return df
 
-# ------------- 2) Filter and prepare events -------------
-df_events = df_raw.select(
-    "cont_id", "product_category", "register_date", "isrd_brth_date",
-    "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
-    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-    "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
-    "branchoffice_code", "policy_status"
-).filter(
-    (F.col("cont_id").isNotNull()) &
-    (F.col("register_date").isNotNull()) &
-    (F.col("product_category").isNotNull()) &
-    (F.col("policy_status") == "Active")
-)
 
-if SAMPLE_FRACTION is not None:
-    print("Sampling fraction:", SAMPLE_FRACTION)
-    df_events = df_events.sample(withReplacement=False, fraction=float(SAMPLE_FRACTION), seed=RANDOM_SEED)
+def add_temporal_features(df):
+    """
+    Add temporal features: season_of_first_policy, age_at_first_policy, years_to_second_policy.
+    Duplicated from training logic to keep this script self-contained.
+    """
+    df = df.withColumn(
+        "season_of_first_policy",
+        F.when(F.month("first_register_ts").between(1, 3), "Q1")
+        .when(F.month("first_register_ts").between(4, 6), "Q2")
+        .when(F.month("first_register_ts").between(7, 9), "Q3")
+        .when(F.month("first_register_ts").between(10, 12), "Q4")
+        .otherwise("Unknown"),
+    )
 
-print("Event rows (approx):", df_events.count())
+    df = df.withColumn(
+        "age_at_first_policy",
+        F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25,
+    )
 
-# ------------- 3) Convert dates and order events per client -------------
-df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
-df_events = df_events.withColumn("birth_ts", F.to_timestamp("isrd_brth_date"))
+    df = df.withColumn(
+        "years_to_second_policy",
+        F.datediff(F.col("second_register_ts"), F.col("first_register_ts"))
+        / 365.25,
+    )
 
-w = Window.partitionBy("cont_id").orderBy(F.col("register_ts").asc())
-df_events = df_events.withColumn("event_idx", F.row_number().over(w))
+    return df
 
-# ------------- 4) Filter to clients with 2+ policies -------------
-w_count = Window.partitionBy("cont_id")
-df_events = df_events.withColumn("total_policies", F.count("*").over(w_count))
-df_events_multi = df_events.filter(F.col("total_policies") >= 2)
-print("Clients with 2+ policies (rows):", df_events_multi.count())
 
-# ------------- 5) Get last and last-but-one policy per client -------------
-w_desc = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
+def impute_missing_values(df, categorical_cols, categorical_mode="UNKNOWN"):
+    """
+    Impute missing values in DataFrame.
 
-df_events_multi = df_events_multi.withColumn("reverse_event_idx", F.row_number().over(w_desc))
+    Numeric columns: median imputation (as in the training notebook).
+    Categorical columns: mode imputation (fallback to 'UNKNOWN').
+    """
+    numeric_cols = [
+        "first_acct_val_amt",
+        "first_face_amt",
+        "first_cash_val_amt",
+        "wc_total_assets",
+        "wc_assetmix_stocks",
+        "wc_assetmix_bonds",
+        "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity",
+        "wc_assetmix_deposits",
+        "wc_assetmix_other_assets",
+        "psn_age",
+        "stock_allocation_ratio",
+        "bond_allocation_ratio",
+        "annuity_allocation_ratio",
+        "mutual_fund_allocation_ratio",
+        "age_at_first_policy",
+        "years_to_second_policy",
+    ]
 
-# Last policy (reverse_event_idx == 1)
-df_last = df_events_multi.filter(F.col("reverse_event_idx") == 1).select(
-    F.col("cont_id"),
-    F.col("product_category").alias("second_product_category"),
-    F.col("register_ts").alias("second_register_ts")
-)
+    # Median imputation for numeric columns
+    fill_numeric = {}
+    for c in numeric_cols:
+        if c in df.columns:
+            try:
+                median_val = df.approxQuantile(c, [0.5], 0.001)[0]
+            except Exception:
+                median_val = 0.0
+            if median_val is None:
+                median_val = 0.0
+            fill_numeric[c] = float(median_val)
 
-# Last but one policy (reverse_event_idx == 2)
-df_last_but_one = df_events_multi.filter(F.col("reverse_event_idx") == 2).select(
-    F.col("cont_id"),
-    F.col("product_category").alias("first_product_category"),
-    F.col("register_ts").alias("first_register_ts"),
-    F.col("birth_ts"),
-    F.col("acct_val_amt").alias("first_acct_val_amt"),
-    F.col("face_amt").alias("first_face_amt"),
-    F.col("cash_val_amt").alias("first_cash_val_amt"),
-    F.col("wc_total_assets"),
-    F.col("wc_assetmix_stocks"),
-    F.col("wc_assetmix_bonds"),
-    F.col("wc_assetmix_mutual_funds"),
-    F.col("wc_assetmix_annuity"),
-    F.col("wc_assetmix_deposits"),
-    F.col("wc_assetmix_other_assets"),
-    F.col("psn_age"),
-    F.col("client_seg"),
-    F.col("client_seg_1"),
-    F.col("aum_band"),
-    F.col("channel"),
-    F.col("agent_segment"),
-    F.col("branchoffice_code")
-)
+    result_df = df.fillna(fill_numeric)
 
-# ------------- 6) Join last-but-one and last policy on cont_id -------------
-df_combined = df_last_but_one.join(df_last, on="cont_id", how="inner")
-print("Clients with both last and last-but-one policy:", df_combined.count())
+    # Mode imputation for categoricals
+    for c in categorical_cols:
+        if c in result_df.columns:
+            try:
+                mode_row = (
+                    result_df.groupBy(c)
+                    .count()
+                    .orderBy(F.desc("count"))
+                    .first()
+                )
+                mode_val = (
+                    mode_row[0]
+                    if mode_row and mode_row[0] is not None
+                    else categorical_mode
+                )
+            except Exception:
+                mode_val = categorical_mode
 
-# ------------- 7) Add NEW FEATURES -------------
+            result_df = result_df.withColumn(
+                c,
+                F.when(F.col(c).isNull(), F.lit(mode_val)).otherwise(F.col(c)),
+            )
 
-df_combined = df_combined.withColumn(
-    "stock_allocation_ratio",
-    F.col("wc_assetmix_stocks") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-)
-df_combined = df_combined.withColumn(
-    "bond_allocation_ratio",
-    F.col("wc_assetmix_bonds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-)
-df_combined = df_combined.withColumn(
-    "annuity_allocation_ratio",
-    F.col("wc_assetmix_annuity") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-)
-df_combined = df_combined.withColumn(
-    "mutual_fund_allocation_ratio",
-    F.col("wc_assetmix_mutual_funds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
-)
+    return result_df
 
-df_combined = df_combined.withColumn(
-    "season_of_first_policy",
-    F.when(F.month("first_register_ts").between(1, 3), "Q1")
-    .when(F.month("first_register_ts").between(4, 6), "Q2")
-    .when(F.month("first_register_ts").between(7, 9), "Q3")
-    .when(F.month("first_register_ts").between(10, 12), "Q4")
-    .otherwise("Unknown")
-)
 
-df_combined = df_combined.withColumn(
-    "age_at_first_policy",
-    F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25
-)
+def encode_categorical_features(df, categorical_cols, spark_context, categorical_mappings=None):
+    """
+    Encode categorical features to integer indices.
+    Duplicated from training logic to keep this script self-contained.
+    """
+    if categorical_mappings is None:
+        categorical_mappings = {}
 
-df_combined = df_combined.withColumn(
-    "years_to_second_policy",
-    F.datediff(F.col("second_register_ts"), F.col("first_register_ts")) / 365.25
-)
+    result_df = df
 
-# ------------- 8) Build product vocabulary for SECOND product (target) -------------
-prod_list = df_combined.select("second_product_category").distinct().rdd.map(lambda r: r[0]).collect()
-prod_list = sorted([p for p in prod_list if p is not None])
-prod2id = {p: i for i, p in enumerate(prod_list)}   # 0-indexed labels
-id2prod = {v: k for k, v in prod2id.items()}
-NUM_CLASSES = len(prod2id)
-print("Vocabulary size (classes for second product):", NUM_CLASSES)
-LGB_PARAMS["num_class"] = NUM_CLASSES
+    for c in categorical_cols:
+        if c in categorical_mappings:
+            mapping = categorical_mappings[c]
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                ),
+            )
+        else:
+            vals = [r[0] for r in result_df.select(c).distinct().collect()]
+            mapping = {v: i for i, v in enumerate(sorted([str(x) for x in vals]))}
+            categorical_mappings[c] = mapping
 
-df_combined = df_combined.withColumn(
-    "label",
-    F.when(F.col("second_product_category").isNotNull(), 
-           F.udf(lambda x: prod2id.get(x, 0), IntegerType())(F.col("second_product_category")))
-    .otherwise(0)
-)
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                ),
+            )
 
-# ------------- 9) Fill missing values with median for numeric columns -------------
-numeric_cols = [
-    "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
-    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-    "psn_age", "stock_allocation_ratio", "bond_allocation_ratio",
-    "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
-    "age_at_first_policy", "years_to_second_policy"
-]
+    return result_df, categorical_mappings
 
-# Compute medians for numeric columns
-medians = df_combined.select([
-    F.expr(f"percentile_approx({col}, 0.5)") for col in numeric_cols
-]).first()
-median_dict = {col: medians[i] for i, col in enumerate(numeric_cols)}
 
-# Fill nulls with median for numeric columns
-for c in numeric_cols:
+def get_feature_columns():
+    """
+    Get the list of feature columns in the correct order.
+    Duplicated from training logic to keep this script self-contained.
+    """
+    return [
+        # First policy numeric features
+        "first_acct_val_amt",
+        "first_face_amt",
+        "first_cash_val_amt",
+        "wc_total_assets",
+        "wc_assetmix_stocks",
+        "wc_assetmix_bonds",
+        "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity",
+        "wc_assetmix_deposits",
+        "wc_assetmix_other_assets",
+        "psn_age",
+        # Allocation ratio features
+        "stock_allocation_ratio",
+        "bond_allocation_ratio",
+        "annuity_allocation_ratio",
+        "mutual_fund_allocation_ratio",
+        # Temporal features
+        "age_at_first_policy",
+        "years_to_second_policy",
+        # Encoded categorical features
+        "first_product_category_idx",
+        "client_seg_idx",
+        "client_seg_1_idx",
+        "aum_band_idx",
+        "channel_idx",
+        "agent_segment_idx",
+        "branchoffice_code_idx",
+        "season_of_first_policy_idx",
+    ]
+
+
+# ============================================================================
+# CONFIG
+# ============================================================================
+
+TABLE_NAME = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
+
+# Business filter for validation
+BUSINESS_MONTH = 202512
+BRANCHOFFICE_CODE = "83"
+
+# Model to validate (trained on last-two-product setup)
+MODEL_NAME = "eda_smartlist.models.lgbm_model_hyperparameter_last2products"
+MODEL_VERSION = "1"  # adjust if you want a different version
+
+
+# ============================================================================
+# HELPERS
+# ============================================================================
+
+def load_model_and_artifacts() -> Dict[str, Any]:
+    """
+    Load the LightGBM model and its preprocessing artifacts (artifacts.pkl)
+    for the last2products configuration.
+
+    Returns a dict with:
+      - model: LightGBM Booster
+      - prod2id, id2prod, label_map, num_classes
+      - categorical_mappings
+      - feature_cols
+    """
+    client = MlflowClient()
+
+    # ----------------------------------------------------------------------
+    # 1) Load registered LightGBM model
+    # ----------------------------------------------------------------------
+    model_uri = f"models:/{MODEL_NAME}/{MODEL_VERSION}"
+    lgbm_model = mlflow.lightgbm.load_model(model_uri)
+
+    # ----------------------------------------------------------------------
+    # 2) Locate the run that owns this model to fetch artifacts.pkl
+    # ----------------------------------------------------------------------
+    mv = client.get_model_version(name=MODEL_NAME, version=MODEL_VERSION)
+    run_id = mv.run_id
+
+    # Download all artifacts for this run locally
+    artifacts_dir = mlflow.artifacts.download_artifacts(
+        artifact_uri=f"runs:/{run_id}/artifacts"
+    )
+
+    artifacts_path = os.path.join(artifacts_dir, "artifacts.pkl")
+    if not os.path.exists(artifacts_path):
+        raise FileNotFoundError(
+            f"artifacts.pkl not found at {artifacts_path}. "
+            "Make sure it was logged with the model."
+        )
+
+    with open(artifacts_path, "rb") as f:
+        artifacts = pickle.load(f)
+
+    prod2id = artifacts.get("prod2id")
+    id2prod = artifacts.get("id2prod")
+    label_map = artifacts.get("label_map")
+    num_classes = artifacts.get("num_classes")
+    categorical_mappings = artifacts.get("categorical_mappings")
+    feature_cols = artifacts.get("feature_cols") or get_feature_columns()
+
+    if prod2id is None or id2prod is None:
+        raise ValueError("prod2id/id2prod mappings missing in artifacts.pkl")
+    if label_map is None:
+        raise ValueError("label_map missing in artifacts.pkl")
+
+    return {
+        "model": lgbm_model,
+        "prod2id": prod2id,
+        "id2prod": id2prod,
+        "label_map": label_map,
+        "num_classes": num_classes,
+        "categorical_mappings": categorical_mappings,
+        "feature_cols": feature_cols,
+    }
+
+
+def build_last2_validation_frame(
+    spark: SparkSession,
+    prod2id: Dict[str, int],
+    categorical_mappings_in: Dict[str, Dict[str, int]] | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build a validation dataset where, for each axa_party_id that has >=2 policies
+    (within BUSINESS_MONTH and BRANCHOFFICE_CODE), we:
+      - Use the last‑but‑one policy as the "feature policy"
+      - Use the last policy as the "true label"
+
+    The preprocessing mirrors the training cell logic:
+      - product_category creation
+      - numeric + asset ratio + temporal features (using prev vs last timestamps)
+      - categorical imputation and encoding
+
+    Returns:
+      - features_pd: pandas DF with [cont_id, axa_party_id, true_label, original_last_product_category, feature_cols...]
+      - debug_pd: pandas DF with raw product_category info for prev/last (for debugging/inspection)
+    """
+    # ----------------------------------------------------------------------
+    # Step 1: Load and basic filter
+    # ----------------------------------------------------------------------
+    df_raw = spark.table(TABLE_NAME)
+
+    df_raw = df_raw.filter(F.col("business_month") == BUSINESS_MONTH).filter(
+        F.col("branchoffice_code") == BRANCHOFFICE_CODE
+    )
+
+    # Only active policies, consistent with training
+    df_raw = df_raw.filter(F.col("policy_status") == "Active")
+
+    # Create product_category using shared mapping logic
+    df_raw = create_product_category_column(df_raw)
+
+    # Keep just the columns we need
+    df_events = df_raw.select(
+        "axa_party_id",
+        "cont_id",
+        "product_category",
+        "register_date",
+        "isrd_brth_date",
+        "acct_val_amt",
+        "face_amt",
+        "cash_val_amt",
+        "wc_total_assets",
+        "wc_assetmix_stocks",
+        "wc_assetmix_bonds",
+        "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity",
+        "wc_assetmix_deposits",
+        "wc_assetmix_other_assets",
+        "psn_age",
+        "client_seg",
+        "client_seg_1",
+        "aum_band",
+        "channel",
+        "agent_segment",
+        "branchoffice_code",
+        "policy_no",
+        "policy_status",
+    ).filter(
+        (F.col("axa_party_id").isNotNull())
+        & (F.col("cont_id").isNotNull())
+        & (F.col("register_date").isNotNull())
+        & (F.col("product_category").isNotNull())
+    )
+
+    # ----------------------------------------------------------------------
+    # Step 2: Identify axa_party_id with >=2 policies (within this slice)
+    # ----------------------------------------------------------------------
+    party_counts = (
+        df_events.groupBy("axa_party_id")
+        .agg(F.countDistinct("policy_no").alias("policy_count"))
+        .filter(F.col("policy_count") >= 2)
+    )
+
+    df_events = df_events.join(party_counts.select("axa_party_id"), on="axa_party_id", how="inner")
+
+    # ----------------------------------------------------------------------
+    # Step 3: Order policies and get last and last‑but‑one per axa_party_id
+    # ----------------------------------------------------------------------
+    df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
+    df_events = df_events.withColumn("birth_ts", F.to_timestamp("isrd_brth_date"))
+
+    w_desc = Window.partitionBy("axa_party_id").orderBy(
+        F.col("register_ts").desc(), F.col("policy_no").desc()
+    )
+    df_events = df_events.withColumn("rev_idx", F.row_number().over(w_desc))
+
+    df_last = df_events.filter(F.col("rev_idx") == 1).select(
+        "axa_party_id",
+        "cont_id",
+        F.col("product_category").alias("second_product_category"),
+        F.col("register_ts").alias("second_register_ts"),
+    )
+
+    df_prev = df_events.filter(F.col("rev_idx") == 2).select(
+        "axa_party_id",
+        "cont_id",
+        F.col("product_category").alias("first_product_category"),
+        F.col("register_ts").alias("first_register_ts"),
+        "birth_ts",
+        F.col("acct_val_amt").alias("first_acct_val_amt"),
+        F.col("face_amt").alias("first_face_amt"),
+        F.col("cash_val_amt").alias("first_cash_val_amt"),
+        "wc_total_assets",
+        "wc_assetmix_stocks",
+        "wc_assetmix_bonds",
+        "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity",
+        "wc_assetmix_deposits",
+        "wc_assetmix_other_assets",
+        "psn_age",
+        "client_seg",
+        "client_seg_1",
+        "aum_band",
+        "channel",
+        "agent_segment",
+        "branchoffice_code",
+    )
+
+    # Join "feature policy" (prev) with "true label" (last)
+    df_combined = df_prev.join(
+        df_last, on=["axa_party_id", "cont_id"], how="inner"
+    )
+
+    # ----------------------------------------------------------------------
+    # Step 4: Feature engineering (same helpers as training)
+    # ----------------------------------------------------------------------
+    df_combined = add_asset_allocation_ratios(df_combined)
+    df_combined = add_temporal_features(df_combined)
+
+    # Map second_product_category to label using training prod2id mapping
+    from pyspark.sql.types import IntegerType
+
+    mapping_bc = spark.sparkContext.broadcast(prod2id)
     df_combined = df_combined.withColumn(
-        c, F.when(F.col(c).isNull(), F.lit(median_dict[c])).otherwise(F.col(c))
+        "true_label",
+        F.udf(lambda x: int(mapping_bc.value.get(x, 0)), IntegerType())(
+            F.col("second_product_category")
+        ),
     )
 
-categorical_cols = ["first_product_category", "client_seg", "client_seg_1", "aum_band", 
-                    "channel", "agent_segment", "branchoffice_code", "season_of_first_policy"]
-modes = {}
-for c in categorical_cols:
-    try:
-        m = df_combined.groupBy(c).count().orderBy(F.desc("count")).first()[0]
-        modes[c] = m if m is not None else "UNKNOWN"
-    except:
-        modes[c] = "UNKNOWN"
-
-for c in categorical_cols:
+    # For comparison column, keep original last product_category
     df_combined = df_combined.withColumn(
-        c, F.when(F.col(c).isNull(), F.lit(modes[c])).otherwise(F.col(c))
+        "original_last_product_category", F.col("second_product_category")
     )
 
-# ------------- 10) Encode categorical features -------------
-for c in categorical_cols:
-    vals = [r[0] for r in df_combined.select(c).distinct().collect()]
-    m = {str(v): i for i, v in enumerate(sorted([str(x) for x in vals]))}
-    b = spark.sparkContext.broadcast(m)
-    df_combined = df_combined.withColumn(
-        c + "_idx",
-        F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN")))
+    # ----------------------------------------------------------------------
+    # Step 5: Impute + encode categoricals exactly like training
+    # ----------------------------------------------------------------------
+    categorical_cols = [
+        "first_product_category",
+        "client_seg",
+        "client_seg_1",
+        "aum_band",
+        "channel",
+        "agent_segment",
+        "branchoffice_code",
+        "season_of_first_policy",
+    ]
+
+    df_combined = impute_missing_values(df_combined, categorical_cols)
+    df_encoded, categorical_mappings_out = encode_categorical_features(
+        df_combined,
+        categorical_cols,
+        spark.sparkContext,
+        categorical_mappings=categorical_mappings_in,
     )
 
-# ------------- 11) Define model feature columns -------------
-model_feature_cols = [
-    "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
-    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
-    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
-    "psn_age",
-    "stock_allocation_ratio", "bond_allocation_ratio",
-    "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
-    "age_at_first_policy", "years_to_second_policy",
-    "first_product_category_idx", "client_seg_idx", "client_seg_1_idx", "aum_band_idx",
-    "channel_idx", "agent_segment_idx", "branchoffice_code_idx", "season_of_first_policy_idx"
-]
+    # ----------------------------------------------------------------------
+    # Step 6: Convert to pandas
+    # ----------------------------------------------------------------------
+    feature_cols = get_feature_columns()
 
-# ------------- 12) Split train/val/test and convert to Pandas -------------
-train_spark, val_spark, test_spark = df_combined.randomSplit([TRAIN_FRAC, VAL_FRAC, TEST_FRAC], seed=RANDOM_SEED)
+    select_cols = (
+        ["cont_id", "axa_party_id", "true_label", "original_last_product_category"]
+        + feature_cols
+    )
 
-print("Train / Val / Test counts:", train_spark.count(), val_spark.count(), test_spark.count())
+    features_pd = df_encoded.select(select_cols).toPandas()
+    features_pd.fillna(0, inplace=True)
 
-train_spark = train_spark.cache()
-val_spark = val_spark.cache()
-test_spark = test_spark.cache()
+    # A small debug frame with the actual categories used
+    debug_pd = df_encoded.select(
+        "cont_id",
+        "axa_party_id",
+        "first_product_category",
+        "second_product_category",
+        "original_last_product_category",
+    ).toPandas()
 
-train_pd = train_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
-val_pd = val_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
-test_pd = test_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
+    return features_pd, debug_pd
 
-# ------------- 13) Final data sanity -------------
-train_pd.fillna(0, inplace=True)
-val_pd.fillna(0, inplace=True)
-test_pd.fillna(0, inplace=True)
 
-print("\n=== FINAL DATA SUMMARY ===")
-print("Num classes (second products):", NUM_CLASSES)
-print("Train shape:", train_pd.shape, "Val shape:", val_pd.shape, "Test shape:", test_pd.shape)
-print("Feature columns:", len(model_feature_cols))
-print("\nYears to second policy stats:")
-print("  Mean:", train_pd['years_to_second_policy'].mean())
-print("  Median:", train_pd['years_to_second_policy'].median())
-print("  Min:", train_pd['years_to_second_policy'].min())
-print("  Max:", train_pd['years_to_second_policy'].max())
-print("\nSample training data:")
-display(train_pd.head(10))
+def run_validation():
+    """
+    End‑to‑end validation:
+      1) Load model + artifacts
+      2) Build last‑two‑product validation frame
+      3) Run predictions
+      4) Append original_last_product_category and write to a validation table
+    """
+    spark = SparkSession.builder.getOrCreate()
+
+    ctx = load_model_and_artifacts()
+    model = ctx["model"]
+    prod2id = ctx["prod2id"]
+    id2prod = ctx["id2prod"]
+    label_map = ctx["label_map"]
+    num_classes = ctx["num_classes"]
+    categorical_mappings = ctx["categorical_mappings"]
+    feature_cols = ctx["feature_cols"]
+
+    # Build validation features: last-but-one as features, last as label
+    features_pd, _ = build_last2_validation_frame(
+        spark=spark,
+        prod2id=prod2id,
+        categorical_mappings_in=categorical_mappings,
+    )
+
+    if features_pd.empty:
+        print("No eligible clients (axa_party_id with >=2 policies) found for validation.")
+        return
+
+    X = features_pd[feature_cols]
+    y_true = features_pd["true_label"].values
+
+    # Predict probabilities and classes
+    prob_matrix = model.predict(X)
+    pred_class_ids = np.argmax(prob_matrix, axis=1)
+
+    # Map model outputs back to product categories using label_map + id2prod
+    inv_label_map = {v: k for k, v in label_map.items()}
+    final_id2prod: Dict[int, str] = {
+        model_id: id2prod[orig_id]
+        for model_id, orig_id in inv_label_map.items()
+        if orig_id in id2prod
+    }
+
+    pred_products = [
+        final_id2prod.get(int(cid), id2prod.get(int(cid), "UNKNOWN"))
+        for cid in pred_class_ids
+    ]
+
+    # Add predictions back to dataframe
+    features_pd["pred_class_id"] = pred_class_ids
+    features_pd["pred_product"] = pred_products
+
+    # Add per‑class probabilities + top probability
+    num_classes_model = prob_matrix.shape[1]
+    for i in range(num_classes_model):
+        features_pd[f"prob_{i}"] = prob_matrix[:, i]
+
+    features_pd["pred_prob"] = features_pd.apply(
+        lambda r: r[f"prob_{int(r['pred_class_id'])}"], axis=1
+    )
+
+    # Simple accuracy for quick sanity‑check
+    accuracy = (pred_class_ids == y_true).mean()
+    print(f"Validation accuracy (last‑but‑one → last product): {accuracy:.4f}")
+
+    # Convert to Spark DataFrame for Databricks exploration
+    spark_df = spark.createDataFrame(features_pd)
+
+    spark_df
+
+if __name__ == "__main__":
+    run_validation()
+
+
