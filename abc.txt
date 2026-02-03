@@ -1,53 +1,35 @@
-import mlflow
 from pyspark.sql import functions as F, Window
-from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+import pandas as pd
+import lightgbm as lgb
+from sklearn.metrics import f1_score, accuracy_score, classification_report, confusion_matrix
 
-spark = SparkSession.builder.getOrCreate()
-
-# ------------------------------------------------------------------------------
-# CONFIG
-# ------------------------------------------------------------------------------
-CATALOG_NAME = "eda_smartlist"
-SCHEMA_NAME = "models"
-MODEL_NAME = "lgbm_hyperparameter_preprocess_and_predict_model"
-MODEL_VERSION = "1"
-
-MODEL_URI = f"models:/{CATALOG_NAME}.{SCHEMA_NAME}.{MODEL_NAME}/{MODEL_VERSION}"
-
-TABLE_NAME = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
-BRANCHOFFICE_CODE = "83"      # or None
-BUSINESS_MONTH = None         # e.g. 202501 or None
-VALIDATION_SAMPLE_SIZE = 5000
+# ------------- PARAMETERS -------------
+SAMPLE_FRACTION = 1   # set None to use full data
+TRAIN_FRAC = 0.8
+VAL_FRAC = 0.1
+TEST_FRAC = 0.1
 RANDOM_SEED = 42
 
-OUTPUT_TABLE = (
-    "eda_smartlist.us_wealth_management_smartlist."
-    "ML_validation_first_to_second_using_pyfunc"
-)
+# LightGBM training params
+LGB_PARAMS = {
+    "objective": "multiclass",
+    "num_class": 6,               # will be set dynamically
+    "metric": "multi_logloss",
+    "boosting_type": "gbdt",
+    "learning_rate": 0.05,
+    "num_leaves": 64,
+    "min_data_in_leaf": 50,
+    "feature_fraction": 0.8,
+    "subsample": 0.8,
+    "subsample_freq": 1,
+    "lambda_l2": 2.0,
+    "verbosity": -1
+}
+NUM_BOOST_ROUND = 2000
+EARLY_STOP = 50
 
-print("=" * 80)
-print("Validation using lgbm_hyperparameter_preprocess_and_predict_model")
-print("=" * 80)
-
-# ------------------------------------------------------------------------------
-# 1) Load and filter raw data
-# ------------------------------------------------------------------------------
-df_raw = spark.table(TABLE_NAME)
-
-if BRANCHOFFICE_CODE:
-    df_raw = df_raw.filter(F.col("branchoffice_code") == BRANCHOFFICE_CODE)
-    print(f"✓ Filtered by branchoffice_code = {BRANCHOFFICE_CODE}")
-
-if BUSINESS_MONTH:
-    df_raw = df_raw.filter(F.col("business_month") == BUSINESS_MONTH)
-    print(f"✓ Filtered by business_month = {BUSINESS_MONTH}")
-
-df_raw = df_raw.filter(F.col("policy_status") == "Active")
-print(f"✓ Filtered to Active policies only, rows: {df_raw.count():,}")
-
-# ------------------------------------------------------------------------------
-# 2) Create product_category (same mapping as training/final_pipeline)
-# ------------------------------------------------------------------------------
+# ------------- 1) Create product_category -------------
 df_raw = df_raw.withColumn(
     "product_category",
     F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
@@ -98,73 +80,221 @@ df_raw = df_raw.withColumn(
     .otherwise("OTHER")
 )
 
-# ------------------------------------------------------------------------------
-# 3) Identify first and second policies per cont_id (clients with >= 2)
-# ------------------------------------------------------------------------------
-df_events = df_raw.withColumn("register_ts", F.to_timestamp("register_date"))
-
-w = Window.partitionBy("cont_id").orderBy("register_ts")
-df_events = df_events.withColumn("event_idx", F.row_number().over(w))
-
-wc = Window.partitionBy("cont_id")
-df_events = df_events.withColumn("total_policies", F.count("*").over(wc))
-
-df_multi = df_events.filter(F.col("total_policies") >= 2)
-print(f"✓ Multi‑policy rows (cont_id with ≥2 policies): {df_multi.count():,}")
-
-# First policy row per client (model input)
-df_first = df_multi.filter(F.col("event_idx") == 1).drop("event_idx", "total_policies")
-
-# Second policy product per client (ground truth label)
-df_second = df_multi.filter(F.col("event_idx") == 2).select(
-    "cont_id",
-    F.col("product_category").alias("original_second_product_category")
+# ------------- 2) Filter and prepare events -------------
+df_events = df_raw.select(
+    "cont_id", "product_category", "register_date", "isrd_brth_date",
+    "acct_val_amt", "face_amt", "cash_val_amt", "wc_total_assets",
+    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+    "psn_age", "client_seg", "client_seg_1", "aum_band", "channel", "agent_segment",
+    "branchoffice_code", "policy_status"
+).filter(
+    (F.col("cont_id").isNotNull()) &
+    (F.col("register_date").isNotNull()) &
+    (F.col("product_category").isNotNull()) &
+    (F.col("policy_status") == "Active")
 )
 
-# ------------------------------------------------------------------------------
-# 4) Sample 5,000 clients and keep only their FIRST policy rows
-# ------------------------------------------------------------------------------
-distinct_clients = df_first.select("cont_id").dropDuplicates()
-n_total_clients = distinct_clients.count()
-n_sample = min(VALIDATION_SAMPLE_SIZE, n_total_clients)
+if SAMPLE_FRACTION is not None:
+    print("Sampling fraction:", SAMPLE_FRACTION)
+    df_events = df_events.sample(withReplacement=False, fraction=float(SAMPLE_FRACTION), seed=RANDOM_SEED)
 
-print(f"Total eligible clients: {n_total_clients:,}")
-print(f"Sampling {n_sample:,} clients for validation...")
+print("Event rows (approx):", df_events.count())
 
-sampled_cont_ids = distinct_clients.orderBy(F.rand(seed=RANDOM_SEED)).limit(n_sample)
-df_first_sample = df_first.join(sampled_cont_ids, on="cont_id", how="inner")
+# ------------- 3) Convert dates and order events per client -------------
+df_events = df_events.withColumn("register_ts", F.to_timestamp("register_date"))
+df_events = df_events.withColumn("birth_ts", F.to_timestamp("isrd_brth_date"))
 
-print(f"Rows in first‑policy sample: {df_first_sample.count():,}")
+w = Window.partitionBy("cont_id").orderBy(F.col("register_ts").asc())
+df_events = df_events.withColumn("event_idx", F.row_number().over(w))
 
-# ------------------------------------------------------------------------------
-# 5) Load pyfunc model and run predictions on FIRST‑policy only
-# ------------------------------------------------------------------------------
-print("\nLoading pyfunc model and running predictions...")
-model = mlflow.pyfunc.load_model(MODEL_URI)
-print(f"✓ Model loaded from {MODEL_URI}")
+# ------------- 4) Filter to clients with 2+ policies -------------
+w_count = Window.partitionBy("cont_id")
+df_events = df_events.withColumn("total_policies", F.count("*").over(w_count))
+df_events_multi = df_events.filter(F.col("total_policies") >= 2)
+print("Clients with 2+ policies (rows):", df_events_multi.count())
 
-# Access the underlying PythonModel (same pattern as final_pipeline.py)
-python_model = model._model_impl.python_model
+# ------------- 5) Get last and last-but-one policy per client -------------
+w_desc = Window.partitionBy("cont_id").orderBy(F.col("register_ts").desc())
 
-# IMPORTANT: we pass ONLY the first-policy rows, so inside the model's
-# preprocess_for_prediction(single_policy_only=True) each cont_id appears
-# as having exactly 1 policy.
-predictions_pd = python_model.predict(None, df_first_sample)
+df_events_multi = df_events_multi.withColumn("reverse_event_idx", F.row_number().over(w_desc))
 
-print("✓ Predictions completed")
-print(f"  Shape: {predictions_pd.shape}")
+# Last policy (reverse_event_idx == 1)
+df_last = df_events_multi.filter(F.col("reverse_event_idx") == 1).select(
+    F.col("cont_id"),
+    F.col("product_category").alias("second_product_category"),
+    F.col("register_ts").alias("second_register_ts")
+)
 
-# ------------------------------------------------------------------------------
-# 6) Attach original second product category and save
-# ------------------------------------------------------------------------------
-pred_spark = spark.createDataFrame(predictions_pd)
+# Last but one policy (reverse_event_idx == 2)
+df_last_but_one = df_events_multi.filter(F.col("reverse_event_idx") == 2).select(
+    F.col("cont_id"),
+    F.col("product_category").alias("first_product_category"),
+    F.col("register_ts").alias("first_register_ts"),
+    F.col("birth_ts"),
+    F.col("acct_val_amt").alias("first_acct_val_amt"),
+    F.col("face_amt").alias("first_face_amt"),
+    F.col("cash_val_amt").alias("first_cash_val_amt"),
+    F.col("wc_total_assets"),
+    F.col("wc_assetmix_stocks"),
+    F.col("wc_assetmix_bonds"),
+    F.col("wc_assetmix_mutual_funds"),
+    F.col("wc_assetmix_annuity"),
+    F.col("wc_assetmix_deposits"),
+    F.col("wc_assetmix_other_assets"),
+    F.col("psn_age"),
+    F.col("client_seg"),
+    F.col("client_seg_1"),
+    F.col("aum_band"),
+    F.col("channel"),
+    F.col("agent_segment"),
+    F.col("branchoffice_code")
+)
 
-# Join predicted next product with the true second product
-result_spark = pred_spark.join(df_second, on="cont_id", how="left")
+# ------------- 6) Join last-but-one and last policy on cont_id -------------
+df_combined = df_last_but_one.join(df_last, on="cont_id", how="inner")
+print("Clients with both last and last-but-one policy:", df_combined.count())
 
-# At this point you have:
-# - pred_spark['pred_product']  (model output)
-# - df_second['original_second_product_category'] (ground truth)
-# in the same Spark DataFrame.
-result_spark.write.mode("overwrite").saveAsTable(OUTPUT_TABLE)
-print(f"✓ Validation results saved to: {OUTPUT_TABLE}")
+# ------------- 7) Add NEW FEATURES -------------
+
+df_combined = df_combined.withColumn(
+    "stock_allocation_ratio",
+    F.col("wc_assetmix_stocks") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+df_combined = df_combined.withColumn(
+    "bond_allocation_ratio",
+    F.col("wc_assetmix_bonds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+df_combined = df_combined.withColumn(
+    "annuity_allocation_ratio",
+    F.col("wc_assetmix_annuity") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+df_combined = df_combined.withColumn(
+    "mutual_fund_allocation_ratio",
+    F.col("wc_assetmix_mutual_funds") / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(F.lit(None))
+)
+
+df_combined = df_combined.withColumn(
+    "season_of_first_policy",
+    F.when(F.month("first_register_ts").between(1, 3), "Q1")
+    .when(F.month("first_register_ts").between(4, 6), "Q2")
+    .when(F.month("first_register_ts").between(7, 9), "Q3")
+    .when(F.month("first_register_ts").between(10, 12), "Q4")
+    .otherwise("Unknown")
+)
+
+df_combined = df_combined.withColumn(
+    "age_at_first_policy",
+    F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25
+)
+
+df_combined = df_combined.withColumn(
+    "years_to_second_policy",
+    F.datediff(F.col("second_register_ts"), F.col("first_register_ts")) / 365.25
+)
+
+# ------------- 8) Build product vocabulary for SECOND product (target) -------------
+prod_list = df_combined.select("second_product_category").distinct().rdd.map(lambda r: r[0]).collect()
+prod_list = sorted([p for p in prod_list if p is not None])
+prod2id = {p: i for i, p in enumerate(prod_list)}   # 0-indexed labels
+id2prod = {v: k for k, v in prod2id.items()}
+NUM_CLASSES = len(prod2id)
+print("Vocabulary size (classes for second product):", NUM_CLASSES)
+LGB_PARAMS["num_class"] = NUM_CLASSES
+
+df_combined = df_combined.withColumn(
+    "label",
+    F.when(F.col("second_product_category").isNotNull(), 
+           F.udf(lambda x: prod2id.get(x, 0), IntegerType())(F.col("second_product_category")))
+    .otherwise(0)
+)
+
+# ------------- 9) Fill missing values with median for numeric columns -------------
+numeric_cols = [
+    "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
+    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+    "psn_age", "stock_allocation_ratio", "bond_allocation_ratio",
+    "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
+    "age_at_first_policy", "years_to_second_policy"
+]
+
+# Compute medians for numeric columns
+medians = df_combined.select([
+    F.expr(f"percentile_approx({col}, 0.5)") for col in numeric_cols
+]).first()
+median_dict = {col: medians[i] for i, col in enumerate(numeric_cols)}
+
+# Fill nulls with median for numeric columns
+for c in numeric_cols:
+    df_combined = df_combined.withColumn(
+        c, F.when(F.col(c).isNull(), F.lit(median_dict[c])).otherwise(F.col(c))
+    )
+
+categorical_cols = ["first_product_category", "client_seg", "client_seg_1", "aum_band", 
+                    "channel", "agent_segment", "branchoffice_code", "season_of_first_policy"]
+modes = {}
+for c in categorical_cols:
+    try:
+        m = df_combined.groupBy(c).count().orderBy(F.desc("count")).first()[0]
+        modes[c] = m if m is not None else "UNKNOWN"
+    except:
+        modes[c] = "UNKNOWN"
+
+for c in categorical_cols:
+    df_combined = df_combined.withColumn(
+        c, F.when(F.col(c).isNull(), F.lit(modes[c])).otherwise(F.col(c))
+    )
+
+# ------------- 10) Encode categorical features -------------
+for c in categorical_cols:
+    vals = [r[0] for r in df_combined.select(c).distinct().collect()]
+    m = {str(v): i for i, v in enumerate(sorted([str(x) for x in vals]))}
+    b = spark.sparkContext.broadcast(m)
+    df_combined = df_combined.withColumn(
+        c + "_idx",
+        F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN")))
+    )
+
+# ------------- 11) Define model feature columns -------------
+model_feature_cols = [
+    "first_acct_val_amt", "first_face_amt", "first_cash_val_amt", "wc_total_assets",
+    "wc_assetmix_stocks", "wc_assetmix_bonds", "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity", "wc_assetmix_deposits", "wc_assetmix_other_assets",
+    "psn_age",
+    "stock_allocation_ratio", "bond_allocation_ratio",
+    "annuity_allocation_ratio", "mutual_fund_allocation_ratio",
+    "age_at_first_policy", "years_to_second_policy",
+    "first_product_category_idx", "client_seg_idx", "client_seg_1_idx", "aum_band_idx",
+    "channel_idx", "agent_segment_idx", "branchoffice_code_idx", "season_of_first_policy_idx"
+]
+
+# ------------- 12) Split train/val/test and convert to Pandas -------------
+train_spark, val_spark, test_spark = df_combined.randomSplit([TRAIN_FRAC, VAL_FRAC, TEST_FRAC], seed=RANDOM_SEED)
+
+print("Train / Val / Test counts:", train_spark.count(), val_spark.count(), test_spark.count())
+
+train_spark = train_spark.cache()
+val_spark = val_spark.cache()
+test_spark = test_spark.cache()
+
+train_pd = train_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
+val_pd = val_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
+test_pd = test_spark.select(["cont_id", "label"] + model_feature_cols).toPandas()
+
+# ------------- 13) Final data sanity -------------
+train_pd.fillna(0, inplace=True)
+val_pd.fillna(0, inplace=True)
+test_pd.fillna(0, inplace=True)
+
+print("\n=== FINAL DATA SUMMARY ===")
+print("Num classes (second products):", NUM_CLASSES)
+print("Train shape:", train_pd.shape, "Val shape:", val_pd.shape, "Test shape:", test_pd.shape)
+print("Feature columns:", len(model_feature_cols))
+print("\nYears to second policy stats:")
+print("  Mean:", train_pd['years_to_second_policy'].mean())
+print("  Median:", train_pd['years_to_second_policy'].median())
+print("  Min:", train_pd['years_to_second_policy'].min())
+print("  Max:", train_pd['years_to_second_policy'].max())
+print("\nSample training data:")
+display(train_pd.head(10))
