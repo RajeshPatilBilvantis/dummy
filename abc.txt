@@ -1,3 +1,129 @@
-[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name `client_seg` cannot be resolved. Did you mean one of the following? [`client_seg_idx`, `cont_id`, `client_seg_1_idx`, `psn_age`, `prob_0`]. SQLSTATE: 42703
-== DataFrame ==
-"col" was called from jdk.internal.reflect.GeneratedMethodAccessor487.invoke(Unknown Source)
+
+# ---------------------------------------------------------------------------
+# Step 6: Create final output DataFrame
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 80)
+print("CREATING FINAL OUTPUT DATAFRAME")
+print("=" * 80)
+
+# Get additional columns from original data
+print("Fetching additional columns from source table...")
+df_additional_cols = df_raw.select(
+    "cont_id",
+    # "axa_party_id",
+    "product_category",  # This is the first_product_category for single-policy clients
+    "psn_age",
+    F.col("client_seg").alias("client_seg_str"),
+    F.col("client_seg_1").alias("client_seg_1_str"),
+    F.col("aum_band").alias("aum_band_str"),
+    F.col("channel").alias("channel_str"),
+    # "client_seg",
+    # "client_seg_1",
+    # "aum_band",
+    # "channel",
+    "division_name",
+    "branch_name",
+    "business_city",
+    "business_state_cod",
+    "register_date",
+    "business_month",
+).filter(
+    F.col("cont_id").isin(pred_pd["cont_id"].tolist())
+).dropDuplicates(["cont_id"])
+
+# Convert pred_pd to Spark DataFrame for joining
+pred_spark = spark.createDataFrame(pred_pd)
+
+# Get list of prob_ columns that actually exist
+prob_cols = [col for col in pred_pd.columns if col.startswith("prob_") and col != "pred_prob"]
+prob_cols.sort()  # Sort to ensure consistent order (prob_0, prob_1, etc.)
+
+print(f"  Found {len(prob_cols)} probability columns: {prob_cols}")
+
+# Build select list with all requested columns
+select_cols = [
+    "axa_party_id",
+    "cont_id",
+    F.col("product_category").alias("first_product_category"),
+    F.col("pred_product").alias("predicted_product"),
+    "pred_class_id",
+    "pred_prob",
+] + prob_cols + [  
+    "talking_point_1",
+    "talking_point_2",
+    "talking_point_3",
+    "talking_point_4",
+    "talking_point_5",
+    "psn_age",
+    "client_seg_str",      # <- from df_additional_cols
+    "client_seg_1_str",    # <- from df_additional_cols
+    "aum_band_str",        # <- from df_additional_cols
+    "channel_str",         # <- from df_additional_cols
+    # "client_seg",
+    # "client_seg_1",
+    # "aum_band",
+    # "channel",
+    "division_name",
+    "branch_name",
+    "business_city",
+    "business_state_cod",
+    "register_date",
+    "business_month",
+]
+
+# Join to get all requested columns
+final_output_df = pred_spark.join(
+    df_additional_cols,
+    on="cont_id",
+    how="left"
+).select(*select_cols)
+
+print(f"✓ Created final output DataFrame: {final_output_df.count():,} records")
+print(f"✓ Columns: {len(final_output_df.columns)}")
+print(f"\n  Column list:")
+for i, col in enumerate(final_output_df.columns, 1):
+    print(f"    {i}. {col}")
+
+try:
+    # Add unique_id column combining business_month and axa_party_id and save the output table
+    final_output_df = final_output_df.withColumn(
+        "unique_id",
+        concat_ws("_", F.col("business_month").cast("string"), F.col("axa_party_id").cast("string"))
+    )
+
+    output_table = "eda_smartlist.us_wealth_management_smartlist.ML_predictions_single_policy"
+    final_output_df.write.mode("append").saveAsTable(output_table)
+    print(f"✓ Results saved to table: {output_table}")
+
+    print(f"\n  Sample results:")
+    display(final_output_df.head(10))
+except Exception as e:
+    print(f"⚠ Could not save results: {e}")
+    import traceback
+    traceback.print_exc()
+
+print("\n" + "=" * 80)
+print("Complete!")
+print("=" * 80)
+
+# # ---------------------------------------------------------------------------
+# # Step 7: Create full output DataFrame (with all feature columns)
+# # ---------------------------------------------------------------------------
+# print("\n" + "=" * 80)
+# print("FULL OUTPUT DATAFRAME (with all features)")
+# print("=" * 80)
+
+# # Convert to Spark DataFrame with all columns
+# final_spark_df = spark.createDataFrame(pred_pd)
+
+# print(f"✓ Full output: {final_spark_df.count():,} records")
+# print(f"✓ Total columns: {len(final_spark_df.columns)}")
+# print(f"\n  Sample results:")
+# display(final_spark_df.head(10))
+
+# print("\n" + "=" * 80)
+# print("PRODUCTION PREDICTIONS COMPLETE")
+# print("=" * 80)
+# print(f"\n  Available DataFrames:")
+# print(f"    - final_output_df: Clean output ({len(final_output_df.columns)} columns)")
+# print(f"    - final_spark_df: Full output with all features ({len(final_spark_df.columns)} columns)")
