@@ -1,4 +1,1313 @@
-how come there is one difference between found and filtered?:✓ Using most recent business_month: 202512
-✓ Filtering to branchoffice_code: 83
-✓ Found 219,993 axa_party_id with exactly 1 policy
-✓ Filtered to 219,994 records (single-policy clients)
+# ============================================================================
+# PRODUCTION PREDICTIONS: Single-Policy Clients
+# ============================================================================
+# STANDALONE CELL - Can be used independently in a separate notebook
+# 
+# This cell:
+# 1. Gets most recent business_month and filters to branchoffice_code 83
+# 2. Selects axa_party_id with exactly 1 policy (to predict their second product)
+# 3. Uses exact preprocessing steps from validation notebook
+# 4. Makes predictions using eda_smartlist.models.lgbm_model_hyperparameter_last2products
+# 5. Performs SHAP analysis and generates enhanced talking points
+
+# ============================================================================
+# IMPORTS
+# ============================================================================
+import os
+import pickle
+from typing import Dict, Any
+
+import mlflow
+import numpy as np
+import pandas as pd
+import shap
+from mlflow.tracking import MlflowClient
+from pyspark.sql import SparkSession, Window
+from pyspark.sql import functions as F
+from pyspark.sql.types import IntegerType
+from pyspark.sql.functions import current_date, datediff, col, concat_ws
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+TABLE_NAME = "dl_tenants_daas.us_wealth_management.wealth_management_client_metrics"
+BRANCHOFFICE_CODE = "83"
+MODEL_NAME = "eda_smartlist.models.lgbm_model_hyperparameter_last2products"
+MODEL_VERSION = "1"
+ARTIFACTS_LOCAL_PATH = "/Workspace/EDA_workspace/RA Smart List/Smart List (NEW)/multiproduct_smartlist/Final_model_files/artifacts.pkl"
+
+# ============================================================================
+# PREPROCESSING HELPER FUNCTIONS
+# ============================================================================
+
+def create_product_category_column(df):
+    """Create product_category column from prod_lob, sub_product_level_1, and sub_product_level_2."""
+    return df.withColumn(
+        "product_category",
+        F.when(F.col("prod_lob") == "LIFE", "LIFE_INSURANCE")
+        .when(
+            F.col("sub_product_level_1").isin(
+                "VLI", "WL", "UL/IUL", "TERM", "PROTECTIVE PRODUCT"
+            ),
+            "LIFE_INSURANCE",
+        )
+        .when(F.col("sub_product_level_2").like("%LIFE%"), "LIFE_INSURANCE")
+        .when(
+            F.col("sub_product_level_2").isin(
+                "VARIABLE UNIVERSAL LIFE",
+                "WHOLE LIFE",
+                "UNIVERSAL LIFE",
+                "INDEX UNIVERSAL LIFE",
+                "TERM PRODUCT",
+                "VARIABLE LIFE",
+                "SURVIVORSHIP WHOLE LIFE",
+                "MONY PROTECTIVE PRODUCT",
+            ),
+            "LIFE_INSURANCE",
+        )
+        .when(
+            F.col("prod_lob").isin("GROUP RETIREMENT", "INDIVIDUAL RETIREMENT"),
+            "RETIREMENT",
+        )
+        .when(
+            F.col("sub_product_level_1").isin(
+                "EQUIVEST",
+                "RETIREMENT 401K",
+                "ACCUMULATOR",
+                "RETIREMENT CORNERSTONE",
+                "SCS",
+                "INVESTMENT EDGE",
+            ),
+            "RETIREMENT",
+        )
+        .when(
+            (F.col("sub_product_level_2").like("%403B%"))
+            | (F.col("sub_product_level_2").like("%401%"))
+            | (F.col("sub_product_level_2").like("%IRA%"))
+            | (F.col("sub_product_level_2").like("%SEP%")),
+            "RETIREMENT",
+        )
+        .when(F.col("prod_lob") == "BROKER DEALER", "INVESTMENT")
+        .when(
+            F.col("sub_product_level_1").isin(
+                "INVESTMENT PRODUCT - DIRECT",
+                "INVESTMENT PRODUCT - BROKERAGE",
+                "INVESTMENT PRODUCT - ADVISORY",
+                "DIRECT",
+                "BROKERAGE",
+                "ADVISORY",
+                "CASH SOLICITOR",
+            ),
+            "INVESTMENT",
+        )
+        .when(
+            (F.col("sub_product_level_2").like("%Investment%"))
+            | (F.col("sub_product_level_2").like("%Brokerage%"))
+            | (F.col("sub_product_level_2").like("%Advisory%")),
+            "INVESTMENT",
+        )
+        .when(F.col("prod_lob") == "NETWORK", "NETWORK_PRODUCTS")
+        .when(
+            (F.col("sub_product_level_1") == "NETWORK PRODUCTS")
+            | (F.col("sub_product_level_2") == "NETWORK PRODUCTS"),
+            "NETWORK_PRODUCTS",
+        )
+        .when(
+            (F.col("prod_lob") == "OTHERS")
+            & (F.col("sub_product_level_1") == "HAS"),
+            "DISABILITY",
+        )
+        .when(F.col("sub_product_level_2") == "HAS - DISABILITY", "DISABILITY")
+        .when(F.col("prod_lob") == "OTHERS", "HEALTH")
+        .when(F.col("sub_product_level_2") == "GROUP HEALTH PRODUCTS", "HEALTH")
+        .otherwise("OTHER"),
+    )
+
+
+def add_asset_allocation_ratios(df):
+    """Add asset allocation ratio features based on wealth metrics."""
+    df = df.withColumn(
+        "stock_allocation_ratio",
+        F.col("wc_assetmix_stocks")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
+    )
+    df = df.withColumn(
+        "bond_allocation_ratio",
+        F.col("wc_assetmix_bonds")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
+    )
+    df = df.withColumn(
+        "annuity_allocation_ratio",
+        F.col("wc_assetmix_annuity")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
+    )
+    df = df.withColumn(
+        "mutual_fund_allocation_ratio",
+        F.col("wc_assetmix_mutual_funds")
+        / F.when(F.col("wc_total_assets") != 0, F.col("wc_total_assets")).otherwise(
+            F.lit(None)
+        ),
+    )
+    return df
+
+
+def impute_missing_values(df, categorical_cols, categorical_mode="UNKNOWN"):
+    """Impute missing values in DataFrame."""
+    numeric_cols = [
+        "first_acct_val_amt",
+        "first_face_amt",
+        "first_cash_val_amt",
+        "wc_total_assets",
+        "wc_assetmix_stocks",
+        "wc_assetmix_bonds",
+        "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity",
+        "wc_assetmix_deposits",
+        "wc_assetmix_other_assets",
+        "psn_age",
+        "stock_allocation_ratio",
+        "bond_allocation_ratio",
+        "annuity_allocation_ratio",
+        "mutual_fund_allocation_ratio",
+        "age_at_first_policy",
+        "years_to_second_policy",
+    ]
+
+    # Median imputation for numeric columns
+    fill_numeric = {}
+    for c in numeric_cols:
+        if c in df.columns:
+            try:
+                median_val = df.approxQuantile(c, [0.5], 0.001)[0]
+            except Exception:
+                median_val = 0.0
+            if median_val is None:
+                median_val = 0.0
+            fill_numeric[c] = float(median_val)
+
+    result_df = df.fillna(fill_numeric)
+
+    # Mode imputation for categoricals
+    for c in categorical_cols:
+        if c in result_df.columns:
+            try:
+                mode_row = (
+                    result_df.groupBy(c)
+                    .count()
+                    .orderBy(F.desc("count"))
+                    .first()
+                )
+                mode_val = (
+                    mode_row[0]
+                    if mode_row and mode_row[0] is not None
+                    else categorical_mode
+                )
+            except Exception:
+                mode_val = categorical_mode
+
+            result_df = result_df.withColumn(
+                c,
+                F.when(F.col(c).isNull(), F.lit(mode_val)).otherwise(F.col(c)),
+            )
+
+    return result_df
+
+
+def encode_categorical_features(df, categorical_cols, spark_context, categorical_mappings=None):
+    """Encode categorical features to integer indices."""
+    if categorical_mappings is None:
+        categorical_mappings = {}
+
+    result_df = df
+
+    for c in categorical_cols:
+        if c in categorical_mappings:
+            mapping = categorical_mappings[c]
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                ),
+            )
+        else:
+            vals = [r[0] for r in result_df.select(c).distinct().collect()]
+            mapping = {v: i for i, v in enumerate(sorted([str(x) for x in vals]))}
+            categorical_mappings[c] = mapping
+
+            b = spark_context.broadcast(mapping)
+            result_df = result_df.withColumn(
+                c + "_idx",
+                F.udf(lambda s: int(b.value.get(str(s), 0)), IntegerType())(
+                    F.coalesce(F.col(c).cast("string"), F.lit("UNKNOWN"))
+                ),
+            )
+
+    return result_df, categorical_mappings
+
+
+def get_feature_columns():
+    """Get the list of feature columns in the correct order."""
+    return [
+        "first_acct_val_amt",
+        "first_face_amt",
+        "first_cash_val_amt",
+        "wc_total_assets",
+        "wc_assetmix_stocks",
+        "wc_assetmix_bonds",
+        "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity",
+        "wc_assetmix_deposits",
+        "wc_assetmix_other_assets",
+        "psn_age",
+        "stock_allocation_ratio",
+        "bond_allocation_ratio",
+        "annuity_allocation_ratio",
+        "mutual_fund_allocation_ratio",
+        "age_at_first_policy",
+        "years_to_second_policy",
+        "first_product_category_idx",
+        "client_seg_idx",
+        "client_seg_1_idx",
+        "aum_band_idx",
+        "channel_idx",
+        "agent_segment_idx",
+        "branchoffice_code_idx",
+        "season_of_first_policy_idx",
+    ]
+
+
+# ============================================================================
+# MODEL LOADING FUNCTION
+# ============================================================================
+
+def load_model_and_artifacts() -> Dict[str, Any]:
+    """Load the LightGBM model and its preprocessing artifacts."""
+    client = MlflowClient()
+
+    # Load registered LightGBM model
+    model_uri = f"models:/{MODEL_NAME}/{MODEL_VERSION}"
+    print(f"Loading model from {model_uri}...")
+    lgbm_model = mlflow.lightgbm.load_model(model_uri)
+    print("✓ Model loaded successfully")
+
+    # Try to load artifacts from local path first
+    artifacts = None
+    if ARTIFACTS_LOCAL_PATH and os.path.exists(ARTIFACTS_LOCAL_PATH):
+        print(f"Loading artifacts from local path: {ARTIFACTS_LOCAL_PATH}")
+        with open(ARTIFACTS_LOCAL_PATH, "rb") as f:
+            artifacts = pickle.load(f)
+        print("✓ Artifacts loaded from local path")
+    else:
+        # Try MLflow run artifacts
+        try:
+            mv = client.get_model_version(name=MODEL_NAME, version=MODEL_VERSION)
+            run_id = mv.run_id
+            print(f"Attempting to download artifacts from run {run_id}...")
+            artifacts_dir = mlflow.artifacts.download_artifacts(
+                artifact_uri=f"runs:/{run_id}/artifacts"
+            )
+            artifacts_path = os.path.join(artifacts_dir, "artifacts.pkl")
+            if os.path.exists(artifacts_path):
+                with open(artifacts_path, "rb") as f:
+                    artifacts = pickle.load(f)
+                print("✓ Artifacts loaded from MLflow")
+        except Exception as e:
+            print(f"⚠ Could not load artifacts from MLflow: {e}")
+
+    if artifacts is None:
+        raise FileNotFoundError(
+            f"Could not find artifacts.pkl. Please ensure it exists at {ARTIFACTS_LOCAL_PATH} "
+            "or is available in MLflow."
+        )
+
+    prod2id = artifacts.get("prod2id")
+    id2prod = artifacts.get("id2prod")
+    label_map = artifacts.get("label_map")
+    num_classes = artifacts.get("num_classes")
+    categorical_mappings = artifacts.get("categorical_mappings")
+    feature_cols = artifacts.get("feature_cols") or get_feature_columns()
+
+    if prod2id is None or id2prod is None:
+        raise ValueError("prod2id/id2prod mappings missing in artifacts.pkl")
+    if label_map is None:
+        raise ValueError("label_map missing in artifacts.pkl")
+
+    print("✓ All artifacts loaded successfully")
+    return {
+        "model": lgbm_model,
+        "prod2id": prod2id,
+        "id2prod": id2prod,
+        "label_map": label_map,
+        "num_classes": num_classes,
+        "categorical_mappings": categorical_mappings,
+        "feature_cols": feature_cols,
+    }
+
+
+# ============================================================================
+# MAIN PRODUCTION PIPELINE
+# ============================================================================
+
+print("=" * 80)
+print("PRODUCTION PREDICTIONS FOR SINGLE-POLICY CLIENTS")
+print("=" * 80)
+
+# Initialize Spark
+spark = SparkSession.builder.getOrCreate()
+
+# ---------------------------------------------------------------------------
+# Step 1: Get most recent business_month and filter data
+# ---------------------------------------------------------------------------
+
+# Get most recent business_month
+max_business_month = spark.table(TABLE_NAME).agg(F.max("business_month")).first()[0]
+print(f"\n✓ Using most recent business_month: {max_business_month}")
+print(f"✓ Filtering to branchoffice_code: {BRANCHOFFICE_CODE}")
+
+# Load and filter data
+df_raw = spark.table(TABLE_NAME)
+df_raw = df_raw.filter(F.col("business_month") == max_business_month)
+df_raw = df_raw.filter(F.col("branchoffice_code") == BRANCHOFFICE_CODE)
+df_raw = df_raw.filter(F.col("policy_status") == "Active")
+
+# Create product_category
+df_raw = create_product_category_column(df_raw)
+
+# ---------------------------------------------------------------------------
+# Step 2: Filter to axa_party_id with exactly 1 policy
+# ---------------------------------------------------------------------------
+df_events = df_raw.select(
+    "axa_party_id",
+    "cont_id",
+    "product_category",
+    "register_date",
+    "isrd_brth_date",
+    "acct_val_amt",
+    "face_amt",
+    "cash_val_amt",
+    "wc_total_assets",
+    "wc_assetmix_stocks",
+    "wc_assetmix_bonds",
+    "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity",
+    "wc_assetmix_deposits",
+    "wc_assetmix_other_assets",
+    "psn_age",
+    "client_seg",
+    "client_seg_1",
+    "aum_band",
+    "channel",
+    "agent_segment",
+    "branchoffice_code",
+    "policy_no",
+).filter(
+    (F.col("axa_party_id").isNotNull())
+    & (F.col("cont_id").isNotNull())
+    & (F.col("register_date").isNotNull())
+    & (F.col("product_category").isNotNull())
+)
+
+# Count policies per axa_party_id
+party_counts = (
+    df_events.groupBy("axa_party_id")
+    .agg(F.countDistinct("policy_no").alias("policy_count"))
+    .filter(F.col("policy_count") == 1)  # Exactly 1 policy
+)
+
+print(f"✓ Found {party_counts.count():,} axa_party_id with exactly 1 policy")
+
+# Filter to single-policy clients
+df_single_policy = df_events.join(
+    party_counts.select("axa_party_id"), on="axa_party_id", how="inner"
+)
+
+print(f"✓ Filtered to {df_single_policy.count():,} records (single-policy clients before dedup)")
+
+# Ensure one row per policy/client (remove technical duplicates)
+df_single_policy = df_single_policy.dropDuplicates(["cont_id"])
+
+print(f"✓ Filtered to {df_single_policy.count():,} records after dropping duplicate cont_id")
+
+# ---------------------------------------------------------------------------
+# Step 3: Preprocess data (treating single policy as "first policy")
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 80)
+print("PREPROCESSING DATA (Exact steps from validation notebook)")
+print("=" * 80)
+
+# Convert dates
+df_single_policy = df_single_policy.withColumn("register_ts", F.to_timestamp("register_date"))
+df_single_policy = df_single_policy.withColumn("birth_ts", F.to_timestamp("isrd_brth_date"))
+
+# Create "first policy" features (treating single policy as first)
+df_first = df_single_policy.select(
+    "axa_party_id",
+    "cont_id",
+    F.col("product_category").alias("first_product_category"),
+    F.col("register_ts").alias("first_register_ts"),
+    "birth_ts",
+    F.col("acct_val_amt").alias("first_acct_val_amt"),
+    F.col("face_amt").alias("first_face_amt"),
+    F.col("cash_val_amt").alias("first_cash_val_amt"),
+    "wc_total_assets",
+    "wc_assetmix_stocks",
+    "wc_assetmix_bonds",
+    "wc_assetmix_mutual_funds",
+    "wc_assetmix_annuity",
+    "wc_assetmix_deposits",
+    "wc_assetmix_other_assets",
+    "psn_age",
+    "client_seg",
+    "client_seg_1",
+    "aum_band",
+    "channel",
+    "agent_segment",
+    "branchoffice_code",
+)
+
+# For single-policy clients, years_to_second_policy = time since first policy (current - first)
+# This represents how long they've had their single policy
+df_first = df_first.withColumn(
+    "second_register_ts", F.current_timestamp()  # Use current timestamp as "second" reference
+)
+
+# Add asset allocation ratios
+df_first = add_asset_allocation_ratios(df_first)
+
+# Add temporal features
+df_first = df_first.withColumn(
+    "season_of_first_policy",
+    F.when(F.month("first_register_ts").between(1, 3), "Q1")
+    .when(F.month("first_register_ts").between(4, 6), "Q2")
+    .when(F.month("first_register_ts").between(7, 9), "Q3")
+    .when(F.month("first_register_ts").between(10, 12), "Q4")
+    .otherwise("Unknown"),
+)
+
+df_first = df_first.withColumn(
+    "age_at_first_policy",
+    F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25,
+)
+
+df_first = df_first.withColumn(
+    "years_to_second_policy",
+    F.datediff(F.col("second_register_ts"), F.col("first_register_ts")) / 365.25,
+)
+
+# Impute missing values
+categorical_cols = [
+    "first_product_category",
+    "client_seg",
+    "client_seg_1",
+    "aum_band",
+    "channel",
+    "agent_segment",
+    "branchoffice_code",
+    "season_of_first_policy",
+]
+
+df_first = impute_missing_values(df_first, categorical_cols)
+
+# Load model and artifacts for encoding
+ctx = load_model_and_artifacts()
+categorical_mappings = ctx["categorical_mappings"]
+feature_cols = ctx["feature_cols"]
+
+# Encode categorical features
+df_encoded, _ = encode_categorical_features(
+    df_first,
+    categorical_cols,
+    spark.sparkContext,
+    categorical_mappings=categorical_mappings,
+)
+
+# Convert to pandas
+select_cols = ["cont_id", "axa_party_id"] + feature_cols
+pred_pd = df_encoded.select(select_cols).toPandas()
+pred_pd.fillna(0, inplace=True)
+
+print(f"✓ Preprocessed {len(pred_pd):,} single-policy clients")
+print(f"✓ Feature columns: {len(feature_cols)}")
+
+# ---------------------------------------------------------------------------
+# Step 4: Make predictions
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 80)
+print("MAKING PREDICTIONS")
+print("=" * 80)
+
+model = ctx["model"]
+prod2id = ctx["prod2id"]
+id2prod = ctx["id2prod"]
+label_map = ctx["label_map"]
+
+X = pred_pd[feature_cols]
+prob_matrix = model.predict(X)
+pred_class_ids = np.argmax(prob_matrix, axis=1)
+
+# Map predictions to product names
+inv_label_map = {v: k for k, v in label_map.items()}
+final_id2prod = {
+    model_id: id2prod[orig_id]
+    for model_id, orig_id in inv_label_map.items()
+    if orig_id in id2prod
+}
+
+pred_products = [
+    final_id2prod.get(int(cid), id2prod.get(int(cid), "UNKNOWN"))
+    for cid in pred_class_ids
+]
+
+# Add predictions to dataframe
+pred_pd["pred_class_id"] = pred_class_ids
+pred_pd["pred_product"] = pred_products
+
+num_classes_model = prob_matrix.shape[1]
+for i in range(num_classes_model):
+    pred_pd[f"prob_{i}"] = prob_matrix[:, i]
+
+pred_pd["pred_prob"] = pred_pd.apply(
+    lambda r: r[f"prob_{int(r['pred_class_id'])}"], axis=1
+)
+
+print(f"✓ Predictions complete for {len(pred_pd):,} clients")
+print(f"\n  Top predicted products:")
+top_products = pred_pd["pred_product"].value_counts().head(10)
+for product, count in top_products.items():
+    print(f"    {product}: {count:,} ({count/len(pred_pd)*100:.1f}%)")
+
+# ---------------------------------------------------------------------------
+# Step 5: SHAP Analysis and Enhanced Talking Points Generation
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 80)
+print("Generating Talking Points with SHAP Analysis")
+print("=" * 80)
+
+try:
+    # Get the underlying LightGBM model for SHAP
+    lgbm_model = model
+    
+    # Use all predictions for SHAP (or sample if too large)
+    SHAP_SAMPLE_SIZE = len(pred_pd)
+    
+    print(f"Computing SHAP values for {SHAP_SAMPLE_SIZE} samples...")
+    
+    # Get sample cont_ids
+    sample_cont_ids = pred_pd['cont_id'].head(SHAP_SAMPLE_SIZE).tolist()
+    df_sample = df_single_policy.filter(F.col("cont_id").isin(sample_cont_ids))
+    
+    # Re-preprocess to get feature values (using same preprocessing as before)
+    print("Re-preprocessing sample data to get feature values...")
+    
+    # Apply same preprocessing steps
+    df_sample_processed = df_sample.select(
+        "axa_party_id",
+        "cont_id",
+        F.col("product_category").alias("first_product_category"),
+        F.col("register_ts").alias("first_register_ts"),
+        "birth_ts",
+        F.col("acct_val_amt").alias("first_acct_val_amt"),
+        F.col("face_amt").alias("first_face_amt"),
+        F.col("cash_val_amt").alias("first_cash_val_amt"),
+        "wc_total_assets",
+        "wc_assetmix_stocks",
+        "wc_assetmix_bonds",
+        "wc_assetmix_mutual_funds",
+        "wc_assetmix_annuity",
+        "wc_assetmix_deposits",
+        "wc_assetmix_other_assets",
+        "psn_age",
+        "client_seg",
+        "client_seg_1",
+        "aum_band",
+        "channel",
+        "agent_segment",
+        "branchoffice_code",
+    )
+    
+    df_sample_processed = df_sample_processed.withColumn(
+        "second_register_ts", F.current_timestamp()
+    )
+    
+    df_sample_processed = add_asset_allocation_ratios(df_sample_processed)
+    
+    df_sample_processed = df_sample_processed.withColumn(
+        "season_of_first_policy",
+        F.when(F.month("first_register_ts").between(1, 3), "Q1")
+        .when(F.month("first_register_ts").between(4, 6), "Q2")
+        .when(F.month("first_register_ts").between(7, 9), "Q3")
+        .when(F.month("first_register_ts").between(10, 12), "Q4")
+        .otherwise("Unknown"),
+    )
+    
+    df_sample_processed = df_sample_processed.withColumn(
+        "age_at_first_policy",
+        F.datediff(F.col("first_register_ts"), F.col("birth_ts")) / 365.25,
+    )
+    
+    df_sample_processed = df_sample_processed.withColumn(
+        "years_to_second_policy",
+        F.datediff(F.col("second_register_ts"), F.col("first_register_ts")) / 365.25,
+    )
+    
+    categorical_cols = [
+        "first_product_category",
+        "client_seg",
+        "client_seg_1",
+        "aum_band",
+        "channel",
+        "agent_segment",
+        "branchoffice_code",
+        "season_of_first_policy",
+    ]
+    
+    df_sample_processed = impute_missing_values(df_sample_processed, categorical_cols)
+    df_sample_encoded, _ = encode_categorical_features(
+        df_sample_processed,
+        categorical_cols,
+        spark.sparkContext,
+        categorical_mappings=categorical_mappings,
+    )
+    
+    # Convert to pandas
+    pred_pd_sample = df_sample_encoded.select(["cont_id"] + feature_cols).toPandas()
+    pred_pd_sample.fillna(0, inplace=True)
+    
+    # Get feature columns
+    feature_cols_shap = feature_cols
+    
+    # Compute SHAP values
+    print("Computing SHAP values...")
+    explainer = shap.TreeExplainer(lgbm_model)
+    shap_values = explainer.shap_values(pred_pd_sample[feature_cols_shap])
+
+    # Get predictions for the sample to determine which class SHAP values to use
+    pred_probs_sample = lgbm_model.predict(pred_pd_sample[feature_cols_shap])
+    pred_class_ids_sample = np.argmax(pred_probs_sample, axis=1)
+    
+    # Handle SHAP output format (list of arrays or 3D array for multiclass)
+    print(f"  SHAP values type: {type(shap_values)}, shape: {shap_values.shape if isinstance(shap_values, np.ndarray) else [len(x) if isinstance(x, np.ndarray) else 'N/A' for x in shap_values] if isinstance(shap_values, list) else 'N/A'}")
+    
+    if isinstance(shap_values, list):
+        # List of arrays: one array per class, each with shape (n_samples, n_features)
+        num_classes_shap = len(shap_values)
+        print(f"  Detected list format with {num_classes_shap} classes")
+        # Extract SHAP values for the predicted class for each sample
+        shap_array = np.array([shap_values[pred_class_ids_sample[i]][i] for i in range(len(pred_pd_sample))])
+    elif isinstance(shap_values, np.ndarray) and len(shap_values.shape) == 3:
+        # 3D array: could be (n_samples, n_features, n_classes) or (n_classes, n_samples, n_features)
+        n_samples, n_features, n_classes = shap_values.shape
+        print(f"  Detected 3D array format: ({n_samples}, {n_features}, {n_classes})")
+        # Try (n_samples, n_features, n_classes) format first
+        if n_samples == len(pred_pd_sample) and n_features == len(feature_cols_shap):
+            # Shape is (n_samples, n_features, n_classes)
+            shap_array = np.array([shap_values[i, :, pred_class_ids_sample[i]] for i in range(n_samples)])
+        elif n_classes == len(pred_pd_sample) and n_samples == len(feature_cols_shap):
+            # Shape might be (n_features, n_samples, n_classes) - transpose
+            shap_values = shap_values.transpose(1, 0, 2)  # Now (n_samples, n_features, n_classes)
+            shap_array = np.array([shap_values[i, :, pred_class_ids_sample[i]] for i in range(len(pred_pd_sample))])
+        else:
+            # Try alternative: (n_classes, n_samples, n_features)
+            shap_values_reshaped = shap_values.transpose(1, 2, 0)  # (n_samples, n_classes, n_features)
+            shap_array = np.array([shap_values_reshaped[i, pred_class_ids_sample[i], :] for i in range(len(pred_pd_sample))])
+    else:
+        # Single 2D array (binary classification or single output)
+        print(f"  Detected 2D array format")
+        shap_array = shap_values
+    
+    print(f"✓ Computed SHAP values: {shap_array.shape}")
+    print(f"  Expected shape: (n_samples={len(pred_pd_sample)}, n_features={len(feature_cols_shap)})")
+    
+    # Validate shape
+    if shap_array.shape[0] != len(pred_pd_sample):
+        raise ValueError(f"SHAP array first dimension ({shap_array.shape[0]}) doesn't match number of samples ({len(pred_pd_sample)})")
+    if shap_array.shape[1] != len(feature_cols_shap):
+        raise ValueError(f"SHAP array second dimension ({shap_array.shape[1]}) doesn't match number of features ({len(feature_cols_shap)})")
+
+    # Enhanced talking point templates with context and actions (from cell 17 of training notebook)
+    ENHANCED_TEMPLATES = {
+    'first_acct_val_amt': {
+        'base': 'First policy account value: ${value:,.0f}',
+        'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
+        'action': 'Discuss portfolio diversification'
+    },
+    'first_face_amt': {
+        'base': 'First policy face amount: ${value:,.0f}',
+        'context': 'significant coverage',
+        'action': 'Review coverage adequacy'
+    },
+    'first_cash_val_amt': {
+        'base': 'First policy cash value: ${value:,.0f}',
+        'context': 'accumulated value',
+        'action': 'Optimize cash value growth'
+    },
+    'wc_total_assets': {
+        'base': 'Total assets: ${value:,.0f}',
+        'context': lambda v: 'high net worth client' if v > 100000 else 'substantial assets',
+        'action': 'Explore comprehensive wealth planning'
+    },
+    'stock_allocation_ratio': {
+        'base': 'Stock allocation: {value:.1%}',
+        'context': 'equity-focused portfolio',
+        'action': 'Position growth products'
+    },
+    'bond_allocation_ratio': {
+        'base': 'Bond allocation: {value:.1%}',
+        'context': 'fixed-income focus',
+        'action': 'Balance with growth opportunities'
+    },
+    'annuity_allocation_ratio': {
+        'base': 'Annuity allocation: {value:.1%}',
+        'context': 'income-focused strategy',
+        'action': 'Expand retirement income solutions'
+    },
+    'mutual_fund_allocation_ratio': {
+        'base': 'Mutual fund allocation: {value:.1%}',
+        'context': 'diversified investment approach',
+        'action': 'Explore additional diversification'
+    },
+    'age_at_first_policy': {
+        'base': 'Age at first policy: {value:.0f}',
+        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+    },
+    'years_to_second_policy': {
+        'base': lambda v: 'First policy client' if v == 0 or v == 0.0 else f'Time since first policy: {v:.1f} years',
+        'context': lambda v: 'new client opportunity' if v == 0 or v == 0.0 else ('active engagement' if v < 3 else 'strategic planning' if v < 10 else 'long-term relationship'),
+        'action': lambda v: 'Build initial relationship' if v == 0 or v == 0.0 else ('Build on engagement momentum' if v < 3 else 'Deepen relationship')
+    },
+    'season_of_first_policy': {
+        'base': 'First policy season: {value}',
+        'context': 'strategic timing',
+        'action': 'Leverage planning cycles'
+    },
+    'first_product_category': {
+        'base': 'Current product: {value}',
+        'context': 'current portfolio foundation',
+        'action': 'Build on existing relationship'
+    },
+    'psn_age': {
+        'base': 'Age: {value:.0f}',
+        'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+        'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+    },
+    'client_seg': {
+        'base': 'Client segment: {value}',
+        'context': 'targeted service tier',
+        'action': 'Customize approach to segment'
+    },
+    'aum_band': {
+        'base': 'AUM band: {value}',
+        'context': 'asset level indicator',
+        'action': 'Tailor recommendations to asset level'
+    },
+        'channel': {
+            'base': 'Channel: {value}',
+            'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
+            'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
+        },
+        'channel_idx': {
+            'base': 'Channel: {value}',
+            'context': lambda v: 'advisor relationship' if 'Advisor' in str(v) else 'direct channel',
+            'action': lambda v: 'Leverage advisor trust' if 'Advisor' in str(v) else 'Personal outreach approach'
+        },
+        'client_tenure_years': {
+            'base': '{value:.0f} years with us',
+            'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
+            'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
+        },
+        'client_tenure': {
+            'base': '{value:.1f} years with us',
+            'context': lambda v: 'long-standing relationship' if v > 10 else 'established client' if v > 5 else 'newer client',
+            'action': lambda v: 'Deepen existing relationship' if v > 5 else 'Build trust and engagement'
+        },
+        'hist_': {
+            'base': 'Recent purchase history: {value}',
+            'context': 'strong engagement pattern',
+            'action': 'Build on existing relationship'
+        },
+        'last_1': {
+            'base': 'Most recent product: {value}',
+            'context': 'active client engagement',
+            'action': 'Natural product progression'
+        },
+        'last_2': {
+            'base': 'Previous product: {value}',
+            'context': 'diverse product portfolio',
+            'action': 'Complement existing holdings'
+        },
+        'freq_': {
+            'base': 'Purchase frequency: {value}',
+            'context': 'consistent engagement',
+            'action': 'Leverage loyalty'
+        },
+        'wc_assetmix_annuity': {
+            'base': 'Annuity allocation: ${value:,.0f}',
+            'context': 'income-focused strategy',
+            'action': 'Expand retirement income solutions'
+        },
+        'face_amt': {
+            'base': 'Face amount: ${value:,.0f}',
+            'context': 'significant coverage',
+            'action': 'Review coverage adequacy'
+        },
+        'cash_val_amt': {
+            'base': 'Cash value: ${value:,.0f}',
+            'context': 'accumulated value',
+            'action': 'Optimize cash value growth'
+        },
+        'branchoffice_code': {
+            'base': 'Branch office: {value}',
+            'context': 'local market presence',
+            'action': 'Leverage local expertise'
+        },
+        'agent_segment': {
+            'base': 'Agent segment: {value}',
+            'context': 'specialized advisory',
+            'action': 'Align with segment expertise'
+        },
+        'client_seg': {
+            'base': 'Client segment: {value}',
+            'context': 'targeted service tier',
+            'action': 'Customize approach to segment'
+        },
+        'client_seg_1': {
+            'base': 'Client segment level 1: {value}',
+            'context': 'refined segmentation',
+            'action': 'Tailor recommendations'
+        },
+        # New features from cell 4
+        'first_acct_val_amt': {
+            'base': 'First policy account value: ${value:,.0f}',
+            'context': lambda v: 'strong capacity' if v > 50000 else 'good capacity' if v > 25000 else 'moderate capacity',
+            'action': 'Discuss portfolio diversification'
+        },
+        'first_face_amt': {
+            'base': 'First policy face amount: ${value:,.0f}',
+            'context': 'significant coverage',
+            'action': 'Review coverage adequacy'
+        },
+        'first_cash_val_amt': {
+            'base': 'First policy cash value: ${value:,.0f}',
+            'context': 'accumulated value',
+            'action': 'Optimize cash value growth'
+        },
+        'stock_allocation_ratio': {
+            'base': 'Stock allocation: {value:.1%}',
+            'context': 'equity-focused portfolio',
+            'action': 'Position growth products'
+        },
+        'bond_allocation_ratio': {
+            'base': 'Bond allocation: {value:.1%}',
+            'context': 'fixed-income focus',
+            'action': 'Balance with growth opportunities'
+        },
+        'annuity_allocation_ratio': {
+            'base': 'Annuity allocation: {value:.1%}',
+            'context': 'income-focused strategy',
+            'action': 'Expand retirement income solutions'
+        },
+        'mutual_fund_allocation_ratio': {
+            'base': 'Mutual fund allocation: {value:.1%}',
+            'context': 'diversified investment approach',
+            'action': 'Explore additional diversification'
+        },
+        'age_at_first_policy': {
+            'base': 'Age at first policy: {value:.0f}',
+            'context': lambda v: 'retirement planning window' if v > 55 else 'wealth accumulation phase' if v > 40 else 'early career',
+            'action': lambda v: 'Focus on retirement readiness' if v > 55 else 'Emphasize long-term growth'
+        },
+        'years_to_second_policy': {
+            'base': lambda v: 'First policy client' if v == 0 or v == 0.0 else f'Time to second policy: {v:.1f} years',
+            'context': lambda v: 'new client opportunity' if v == 0 or v == 0.0 else ('active engagement' if v < 3 else 'strategic planning' if v < 10 else 'long-term relationship'),
+            'action': lambda v: 'Build initial relationship' if v == 0 or v == 0.0 else ('Build on engagement momentum' if v < 3 else 'Deepen relationship')
+        },
+        'season_of_first_policy': {
+            'base': 'First policy season: {value}',
+            'context': 'strategic timing',
+            'action': 'Leverage planning cycles'
+        },
+        'first_product_category': {
+            'base': 'First product: {value}',
+            'context': 'current portfolio foundation',
+            'action': 'Build on existing relationship'
+        },
+        'wc_assetmix_bonds': {
+            'base': 'Bond allocation: ${value:,.0f}',
+            'context': 'fixed-income focus',
+            'action': 'Balance with growth opportunities'
+        },
+        'wc_assetmix_mutual_funds': {
+            'base': 'Mutual fund allocation: ${value:,.0f}',
+            'context': 'diversified investment approach',
+            'action': 'Explore additional diversification'
+        },
+        'wc_assetmix_deposits': {
+            'base': 'Deposit allocation: ${value:,.0f}',
+            'context': 'liquidity preference',
+            'action': 'Optimize cash deployment'
+        },
+        'wc_assetmix_other_assets': {
+            'base': 'Other assets: ${value:,.0f}',
+            'context': 'diversified portfolio',
+            'action': 'Comprehensive wealth planning'
+        }
+    }
+    
+    def generate_enhanced_talking_point(feature_name, feature_value, shap_value, id2prod=None):
+        """Generate enhanced talking point with context and action (from cell 17 of training notebook)"""
+        # Impact indicator
+        impact = "🔥" if abs(shap_value) > 0.1 else "⭐" if abs(shap_value) > 0.05 else ""
+        
+        # Handle special cases for index features (map to actual values if possible)
+        if feature_name.endswith('_idx'):
+            # Try to map index to actual categorical value
+            base_feat = feature_name.replace('_idx', '')
+            # For product category, try to get actual product name
+            if base_feat == 'first_product_category' and id2prod is not None:
+                try:
+                    prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
+                    if prod_id > 0 and prod_id in id2prod:
+                        feature_value = id2prod[prod_id]
+                        feature_name = 'first_product_category'  # Use base name for template lookup
+                    else:
+                        return None  # Skip if can't map
+                except:
+                    return None  # Skip if conversion fails
+            else:
+                # For other index features, skip (not meaningful to clients)
+                return None
+        
+        # Handle special cases for old sequence features (no longer in feature set, but keep for backward compatibility)
+        if feature_name.startswith('hist_'):
+            # Try to map to product name
+            if id2prod is not None:
+                try:
+                    prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
+                    if prod_id > 0 and prod_id in id2prod:
+                        feature_value = id2prod[prod_id]
+                    elif prod_id == 0:
+                        return None  # Skip zero/empty history
+                except:
+                    pass
+            template_dict = ENHANCED_TEMPLATES.get('hist_', None)
+        elif feature_name.startswith('freq_'):
+            # Skip zero frequencies
+            try:
+                freq_val = float(feature_value) if feature_value not in [None, ''] else 0
+                if freq_val == 0:
+                    return None
+            except:
+                pass
+            template_dict = ENHANCED_TEMPLATES.get('freq_', None)
+        elif feature_name in ['last_1', 'last_2']:
+            # Try to map product ID to name
+            if id2prod is not None:
+                try:
+                    prod_id = int(float(feature_value)) if feature_value not in [None, ''] else 0
+                    if prod_id > 0 and prod_id in id2prod:
+                        feature_value = id2prod[prod_id]
+                    elif prod_id == 0:
+                        return None  # Skip zero/empty
+                except:
+                    pass
+            template_dict = ENHANCED_TEMPLATES.get(feature_name, None)
+        else:
+            # Find matching template
+            template_dict = None
+            for template_key in ENHANCED_TEMPLATES:
+                if template_key in feature_name or feature_name.startswith(template_key):
+                    template_dict = ENHANCED_TEMPLATES[template_key]
+                    break
+        
+        if not template_dict:
+            # Skip index features and other non-meaningful features
+            if feature_name.endswith('_idx') or feature_name in ['seq_len', 'unique_prior', 'num_switches']:
+                return None
+            # Fallback to simple format
+            return f"{impact} {feature_name}: {feature_value} (impact: {shap_value:+.3f})"
+        
+        # Format base message
+        try:
+            template = template_dict['base']
+            
+            # Handle None, NaN, or empty values
+            if feature_value is None or feature_value == '' or (isinstance(feature_value, float) and np.isnan(feature_value)):
+                return None
+            
+            # Convert to numeric if needed (for lambda functions and formatting)
+            original_value = feature_value
+            if isinstance(feature_value, str) and feature_value not in ['N/A', 'UNKNOWN']:
+                try:
+                    feature_value = float(feature_value)
+                except:
+                    # Keep as string if conversion fails
+                    pass
+            
+            # Check if template is a callable (lambda function)
+            if callable(template):
+                message = template(feature_value)
+            elif '{value' in template:
+                # String template with format placeholders
+                message = template.format(value=feature_value)
+            else:
+                # Plain string template
+                message = template
+        except Exception as e:
+            # If formatting fails, skip this feature
+            return None
+        
+        # Add context
+        context = template_dict.get('context')
+        if context:
+            if callable(context):
+                try:
+                    context_str = context(feature_value)
+                except:
+                    context_str = None
+            else:
+                context_str = context
+            
+            if context_str:
+                message += f" ({context_str})"
+        
+        # Add action
+        action = template_dict.get('action')
+        if action:
+            if callable(action):
+                try:
+                    action_str = action(feature_value)
+                except:
+                    action_str = None
+            else:
+                action_str = action
+            
+            if action_str:
+                message += f" → {action_str}"
+        
+        return f"{impact} {message}"
+    
+    # Generate talking points for the sample
+    print("Generating talking points...")
+    
+    # Create a lookup dictionary for faster access to predictions
+    predictions_dict = pred_pd.set_index('cont_id')[['pred_product', 'pred_prob']].to_dict('index')
+    
+    # Get top features for each sample
+    talking_points_list = []
+    print(f"  Processing {len(pred_pd_sample):,} samples...")
+    
+    for idx in range(len(pred_pd_sample)):
+        if (idx + 1) % 10000 == 0:
+            print(f"    Processed {idx + 1:,} / {len(pred_pd_sample):,} samples...")
+        
+        cont_id = pred_pd_sample.iloc[idx]['cont_id']
+        
+        # Get prediction info from dictionary (faster than repeated filtering)
+        pred_info = predictions_dict.get(cont_id, {'pred_product': 'UNKNOWN', 'pred_prob': 0.0})
+        pred_product = pred_info['pred_product']
+        pred_prob = pred_info['pred_prob']
+        
+        # Get feature contributions (SHAP values)
+        shap_contributions = shap_array[idx]
+        
+        # Ensure shap_contributions is 1D array
+        if isinstance(shap_contributions, np.ndarray) and shap_contributions.ndim > 1:
+            shap_contributions = shap_contributions.flatten()
+        
+        # Get top 5 features
+        feature_contributions = list(zip(feature_cols_shap, shap_contributions))
+        # Sort by absolute SHAP value
+        feature_contributions.sort(key=lambda x: abs(float(x[1])), reverse=True)
+        top_features = feature_contributions[:5]
+        
+        # Generate talking points
+        valid_talking_points = []
+        for rank, (feat_name, shap_val) in enumerate(top_features, 1):
+            try:
+                feat_value = pred_pd_sample.iloc[idx][feat_name]
+                tp = generate_enhanced_talking_point(feat_name, feat_value, shap_val, id2prod)
+                if tp is not None:
+                    valid_talking_points.append(tp)
+            except Exception as e:
+                # Skip this feature if there's an error
+                continue
+        
+        talking_points_list.append({
+            'cont_id': cont_id,
+            'pred_product': pred_product,
+            'pred_prob': pred_prob,
+            'talking_point_1': valid_talking_points[0] if len(valid_talking_points) > 0 else None,
+            'talking_point_2': valid_talking_points[1] if len(valid_talking_points) > 1 else None,
+            'talking_point_3': valid_talking_points[2] if len(valid_talking_points) > 2 else None,
+            'talking_point_4': valid_talking_points[3] if len(valid_talking_points) > 3 else None,
+            'talking_point_5': valid_talking_points[4] if len(valid_talking_points) > 4 else None,
+        })
+    
+    # Create DataFrame with talking points
+    talking_points_df = pd.DataFrame(talking_points_list)
+    
+    # Merge talking points back to predictions
+    # For the sample that has talking points
+    predictions_with_tp = pred_pd.merge(talking_points_df[['cont_id', 'talking_point_1', 'talking_point_2', 
+                                                           'talking_point_3', 'talking_point_4', 'talking_point_5']], 
+                                       on='cont_id', how='left')
+    
+    # For records without talking points (not in sample), ensure columns exist and are properly typed
+    for col in ['talking_point_1', 'talking_point_2', 'talking_point_3', 'talking_point_4', 'talking_point_5']:
+        if col not in predictions_with_tp.columns:
+            predictions_with_tp[col] = None
+        # Convert to object dtype to handle None values properly
+        predictions_with_tp[col] = predictions_with_tp[col].astype('object')
+        # Replace NaN with None (using fillna with value parameter)
+        predictions_with_tp.loc[predictions_with_tp[col].isna(), col] = None
+    
+    print(f"✓ Generated talking points for {len(talking_points_df):,} records")
+    print(f"\n  Sample talking points:")
+    sample_tp = talking_points_df.head(3)
+    for _, row in sample_tp.iterrows():
+        print(f"\n  Client: {row['cont_id']}")
+        print(f"    Product: {row['pred_product']}")
+        print(f"    Probability: {row['pred_prob']:.3f}")
+        for i in range(1, 6):
+            tp = row.get(f'talking_point_{i}')
+            if pd.notna(tp) and tp is not None:
+                print(f"    {i}. {tp}")
+    
+    # Update predictions with talking points
+    pred_pd = predictions_with_tp
+    
+except Exception as e:
+    print(f"⚠ Could not generate talking points: {e}")
+    import traceback
+    traceback.print_exc()
+    print("Continuing without talking points...")
+
+
+# ---------------------------------------------------------------------------
+# Step 6: Create final output DataFrame
+# ---------------------------------------------------------------------------
+print("\n" + "=" * 80)
+print("CREATING FINAL OUTPUT DATAFRAME")
+print("=" * 80)
+
+# Get additional columns from original data
+print("Fetching additional columns from source table...")
+df_additional_cols = df_raw.select(
+    "cont_id",
+    # "axa_party_id",
+    "product_category",  # This is the first_product_category for single-policy clients
+    # "psn_age",
+    # "client_seg",
+    # "client_seg_1",
+    # "aum_band",
+    # "channel",
+    "division_name",
+    "branch_name",
+    "business_city",
+    "business_state_cod",
+    "register_date",
+    "business_month",
+).filter(
+    F.col("cont_id").isin(pred_pd["cont_id"].tolist())
+).dropDuplicates(["cont_id"])
+
+# Convert pred_pd to Spark DataFrame for joining
+pred_spark = spark.createDataFrame(pred_pd)
+
+# Get list of prob_ columns that actually exist
+prob_cols = [col for col in pred_pd.columns if col.startswith("prob_") and col != "pred_prob"]
+prob_cols.sort()  # Sort to ensure consistent order (prob_0, prob_1, etc.)
+
+print(f"  Found {len(prob_cols)} probability columns: {prob_cols}")
+
+# Build select list with all requested columns
+select_cols = [
+    "axa_party_id",
+    "cont_id",
+    F.col("product_category").alias("first_product_category"),
+    F.col("pred_product").alias("predicted_product"),
+    "pred_class_id",
+    "pred_prob",
+] + prob_cols + [  
+    "talking_point_1",
+    "talking_point_2",
+    "talking_point_3",
+    "talking_point_4",
+    "talking_point_5",
+    "psn_age",
+    "client_seg",
+    "client_seg_1",
+    "aum_band",
+    "channel",
+    "division_name",
+    "branch_name",
+    "business_city",
+    "business_state_cod",
+    "register_date",
+    "business_month",
+]
+
+# Join to get all requested columns
+final_output_df = pred_spark.join(
+    df_additional_cols,
+    on="cont_id",
+    how="left"
+).select(*select_cols)
+
+print(f"✓ Created final output DataFrame: {final_output_df.count():,} records")
+print(f"✓ Columns: {len(final_output_df.columns)}")
+print(f"\n  Column list:")
+for i, col in enumerate(final_output_df.columns, 1):
+    print(f"    {i}. {col}")
+
+try:
+    # Add unique_id column combining business_month and axa_party_id and save the output table
+    final_output_df = final_output_df.withColumn(
+        "unique_id",
+        concat_ws("_", F.col("business_month").cast("string"), F.col("axa_party_id").cast("string"))
+    )
+
+    output_table = "eda_smartlist.us_wealth_management_smartlist.ML_predictions_single_policy"
+    final_output_df.write.mode("append").saveAsTable(output_table)
+    print(f"✓ Results saved to table: {output_table}")
+
+    print(f"\n  Sample results:")
+    display(final_output_df.head(10))
+except Exception as e:
+    print(f"⚠ Could not save results: {e}")
+    import traceback
+    traceback.print_exc()
+
+print("\n" + "=" * 80)
+print("Complete!")
+print("=" * 80)
+
+# # ---------------------------------------------------------------------------
+# # Step 7: Create full output DataFrame (with all feature columns)
+# # ---------------------------------------------------------------------------
+# print("\n" + "=" * 80)
+# print("FULL OUTPUT DATAFRAME (with all features)")
+# print("=" * 80)
+
+# # Convert to Spark DataFrame with all columns
+# final_spark_df = spark.createDataFrame(pred_pd)
+
+# print(f"✓ Full output: {final_spark_df.count():,} records")
+# print(f"✓ Total columns: {len(final_spark_df.columns)}")
+# print(f"\n  Sample results:")
+# display(final_spark_df.head(10))
+
+# print("\n" + "=" * 80)
+# print("PRODUCTION PREDICTIONS COMPLETE")
+# print("=" * 80)
+# print(f"\n  Available DataFrames:")
+# print(f"    - final_output_df: Clean output ({len(final_output_df.columns)} columns)")
+# print(f"    - final_spark_df: Full output with all features ({len(final_spark_df.columns)} columns)")
