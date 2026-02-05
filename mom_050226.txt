@@ -1,0 +1,17 @@
+Monthly Tracking & Feedback Loop
+
+From February onwards, every monthly run should include:
+
+Current month predictions for clients with one product
+
+Previous month’s predicted clients:
+
+Whether they actually purchased the predicted second policy or not
+
+This comparison must be shared as part of every monthly pipeline output.
+
+Feature Enhancement Analysis
+
+Explore additional databases/tables to identify new features.
+
+Analyze whether these features can improve model performance and retraining.
