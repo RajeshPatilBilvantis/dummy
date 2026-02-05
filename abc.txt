@@ -1,131 +1,309 @@
-# Check what columns are available in df_encoded
-print(f"\n  Columns in df_encoded: {len(df_encoded.columns)}")
-print(f"  Sample columns: {df_encoded.columns[:10]}...")
-
-# Convert to pandas
-select_cols = ["cont_id", "axa_party_id"] + feature_cols
-# Filter to only columns that actually exist in df_encoded
-available_cols = [col for col in select_cols if col in df_encoded.columns]
-missing_cols = [col for col in select_cols if col not in df_encoded.columns]
-
-if missing_cols:
-    print(f"\n⚠ Missing columns in df_encoded: {missing_cols}")
-    print(f"  This might be expected if columns were renamed or not created during preprocessing")
-
-features_pd = df_encoded.select(available_cols).toPandas()
-features_pd.fillna(0, inplace=True)
-
-print(f"\n✓ Reconstructed features for {len(features_pd):,} clients")
-print(f"✓ Feature columns available: {len([c for c in feature_cols if c in features_pd.columns])}/{len(feature_cols)}")
-if len([c for c in feature_cols if c not in features_pd.columns]) > 0:
-    missing = [c for c in feature_cols if c not in features_pd.columns]
-    print(f"⚠ Missing feature columns in final output: {missing}")
-    print(f"  These will be excluded from SHAP analysis")
-
-
-==================================
-
-
 # ============================================================================
-# MERGE PREDICTIONS WITH FEATURES
+# GLOBAL SHAP PLOTS AND FEATURE IMPORTANCE
 # ============================================================================
 
-# Check which feature columns are available in features_pd
-available_feature_cols = [col for col in feature_cols if col in features_pd.columns]
-missing_feature_cols = [col for col in feature_cols if col not in features_pd.columns]
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-if missing_feature_cols:
-    print(f"⚠ Warning: Missing feature columns in reconstructed data: {missing_feature_cols}")
-    print(f"  Available: {len(available_feature_cols)}/{len(feature_cols)} feature columns")
-    # Use only available columns
-    feature_cols_to_use = available_feature_cols
-else:
-    feature_cols_to_use = feature_cols
+print("\n" + "=" * 80)
+print("GLOBAL SHAP-BASED FEATURE IMPORTANCE")
+print("=" * 80)
 
-print(f"✓ Using {len(feature_cols_to_use)} feature columns for SHAP analysis")
+# Create a SHAP summary plot (requires a notebook backend that can display figures)
+try:
+    shap.summary_plot(shap_array, pred_with_features[feature_cols], feature_names=feature_cols, show=True)
+except Exception as e:
+    print(f"⚠ Could not generate SHAP summary plot: {e}")
 
-# Merge predictions with features
-pred_with_features = pred_pd.merge(
-    features_pd[["cont_id"] + feature_cols_to_use], on="cont_id", how="inner"
+# Compute mean absolute SHAP value per feature for a bar plot
+mean_abs_shap = np.mean(np.abs(shap_array), axis=0)
+feature_importance_df = pd.DataFrame({
+    "feature": feature_cols,
+    "mean_abs_shap": mean_abs_shap,
+}).sort_values("mean_abs_shap", ascending=False)
+
+plt.figure(figsize=(10, 6))
+sns.barplot(
+    data=feature_importance_df.head(20),
+    x="mean_abs_shap",
+    y="feature",
+    palette="viridis"
 )
+plt.title("Top 20 Features by Mean |SHAP| (Global Importance)")
+plt.xlabel("Mean |SHAP value|")
+plt.ylabel("Feature")
+plt.tight_layout()
+plt.show()
 
-print(f"✓ Merged predictions with features: {len(pred_with_features):,} records")
+print("\nTop 20 features by mean |SHAP|:")
+display(feature_importance_df.head(20))
 
-# Ensure we have feature data for all predictions
-if len(pred_with_features) < len(pred_pd):
-    missing = len(pred_pd) - len(pred_with_features)
-    print(f"⚠ Warning: {missing} predictions missing feature data (will be skipped)")
-
-# Verify all required columns are present
-missing_in_merged = [col for col in feature_cols_to_use if col not in pred_with_features.columns]
-if missing_in_merged:
-    print(f"⚠ Warning: Columns missing after merge: {missing_in_merged}")
-    # Remove missing columns from feature_cols_to_use
-    feature_cols_to_use = [col for col in feature_cols_to_use if col in pred_with_features.columns]
-    print(f"  Updated to {len(feature_cols_to_use)} available feature columns")
-
-
-=============================
+==================
 
 
 # ============================================================================
-# SHAP ANALYSIS FOR REASONING
+# PREDICTION CONFIDENCE AND PRODUCT-LEVEL PATTERNS
 # ============================================================================
 
 print("\n" + "=" * 80)
-print("COMPUTING SHAP VALUES FOR REASONING")
+print("PREDICTION CONFIDENCE AND PRODUCT PATTERNS")
 print("=" * 80)
 
-# Verify all feature columns are present before proceeding
-missing_cols = [col for col in feature_cols_to_use if col not in pred_with_features.columns]
-if missing_cols:
-    raise ValueError(f"Missing required feature columns: {missing_cols}\n"
-                   f"Available columns: {list(pred_with_features.columns)}")
+# Basic confidence histogram
+plt.figure(figsize=(8, 5))
+sns.histplot(pred_pd["pred_prob"], bins=30, kde=True)
+plt.title("Prediction Confidence Distribution")
+plt.xlabel("Predicted probability of recommended product")
+plt.ylabel("Count")
+plt.tight_layout()
+plt.show()
 
-# Prepare feature matrix using only available columns
-X = pred_with_features[feature_cols_to_use].values
+# Confidence by predicted product (boxplot)
+plt.figure(figsize=(10, 6))
+# Use predicted_product or pred_product depending on column name
+pred_product_col = "predicted_product" if "predicted_product" in pred_pd.columns else "pred_product"
 
-print(f"✓ Feature matrix shape: {X.shape}")
+sns.boxplot(
+    data=pred_pd,
+    x=pred_product_col,
+    y="pred_prob",
+)
+plt.title("Prediction Confidence by Product")
+plt.xlabel("Predicted product")
+plt.ylabel("Predicted probability")
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+plt.show()
 
-# Compute SHAP values
-print("Computing SHAP values (this may take a while)...")
-explainer = shap.TreeExplainer(model)
-shap_values = explainer.shap_values(X)
+# Count of predictions by product
+plt.figure(figsize=(10, 5))
+prod_counts = pred_pd[pred_product_col].value_counts().reset_index()
+prod_counts.columns = ["product", "count"]
 
-# Get predictions to determine which class SHAP values to use
-pred_probs = model.predict(X)
-pred_class_ids = np.argmax(pred_probs, axis=1)
+sns.barplot(data=prod_counts, x="product", y="count")
+plt.title("Number of Predictions by Product")
+plt.xlabel("Predicted product")
+plt.ylabel("Count")
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+plt.show()
 
-# Handle SHAP output format
-if isinstance(shap_values, list):
-    # List of arrays: one array per class
-    shap_array = np.array([shap_values[pred_class_ids[i]][i] for i in range(len(pred_with_features))])
-elif isinstance(shap_values, np.ndarray) and len(shap_values.shape) == 3:
-    # 3D array: (n_samples, n_features, n_classes) or (n_classes, n_samples, n_features)
-    n_samples, n_features, n_classes = shap_values.shape
-    if n_samples == len(pred_with_features) and n_features == len(feature_cols_to_use):
-        shap_array = np.array([shap_values[i, :, pred_class_ids[i]] for i in range(n_samples)])
+print("\nTop products by prediction volume:")
+display(prod_counts.head(10))
+
+
+==========================
+
+
+# ============================================================================
+# GENERATE DETAILED REASONING FOR EACH PREDICTION
+# ============================================================================
+
+print("\n" + "=" * 80)
+print("GENERATING DETAILED REASONING")
+print("=" * 80)
+
+
+def format_feature_value(feat_name: str, feat_value: Any, categorical_mappings: Dict) -> str:
+    """Format feature value for human-readable display."""
+    if feat_name.endswith("_idx"):
+        base_name = feat_name.replace("_idx", "")
+        if categorical_mappings and base_name in categorical_mappings:
+            mapping = categorical_mappings[base_name]
+            inv_mapping = {v: k for k, v in mapping.items()}
+            try:
+                idx_val = int(float(feat_value))
+                return inv_mapping.get(idx_val, str(feat_value))
+            except:
+                return str(feat_value)
+    
+    # Format numeric values
+    if isinstance(feat_value, (int, float)):
+        if "ratio" in feat_name or "allocation" in feat_name:
+            return f"{feat_value:.1%}"
+        elif "age" in feat_name or "years" in feat_name:
+            return f"{feat_value:.1f}"
+        elif "amt" in feat_name or "assets" in feat_name or "mix" in feat_name:
+            return f"${feat_value:,.0f}"
+        else:
+            return f"{feat_value:,.2f}"
+    
+    return str(feat_value)
+
+
+def generate_reasoning(
+    cont_id: str,
+    pred_product: str,
+    pred_prob: float,
+    all_probs: np.ndarray,
+    feature_values: pd.Series,
+    shap_contributions: np.ndarray,
+    shap_all_classes: List[np.ndarray],
+    feature_cols: List[str],
+    final_id2prod: Dict[int, str],
+    categorical_mappings: Dict,
+) -> Dict[str, Any]:
+    """Generate detailed reasoning for a single prediction."""
+    
+    # Get top contributing features (positive and negative)
+    feature_contributions = list(zip(feature_cols, shap_contributions))
+    feature_contributions.sort(key=lambda x: abs(float(x[1])), reverse=True)
+    
+    top_positive = [fc for fc in feature_contributions if fc[1] > 0][:5]
+    top_negative = [fc for fc in feature_contributions if fc[1] < 0][:5]
+    
+    # Get top 3 alternative products (by probability)
+    prob_with_class = [(all_probs[i], i) for i in range(len(all_probs))]
+    prob_with_class.sort(reverse=True)
+    
+    top_alternatives = []
+    for prob, class_id in prob_with_class[1:4]:  # Skip the predicted one
+        product_name = final_id2prod.get(class_id, f"CLASS_{class_id}")
+        top_alternatives.append({
+            "product": product_name,
+            "probability": float(prob),
+            "class_id": int(class_id),
+        })
+    
+    # Get SHAP contributions for top alternative
+    alternative_reasons = []
+    if top_alternatives and len(shap_all_classes) > 1:
+        alt_class_id = top_alternatives[0]["class_id"]
+        if alt_class_id < len(shap_all_classes):
+            # Get SHAP values for alternative class
+            if isinstance(shap_all_classes[alt_class_id], np.ndarray):
+                if len(shap_all_classes[alt_class_id].shape) == 2:
+                    alt_shap = shap_all_classes[alt_class_id][0]  # First sample
+                else:
+                    alt_shap = shap_all_classes[alt_class_id]
+            else:
+                alt_shap = shap_all_classes[alt_class_id]
+            
+            # Features that favor alternative over predicted
+            diff_contributions = [
+                (feature_cols[i], alt_shap[i] - shap_contributions[i]) 
+                for i in range(len(feature_cols))
+            ]
+            diff_contributions.sort(key=lambda x: abs(float(x[1])), reverse=True)
+            
+            alternative_reasons = [
+                {
+                    "feature": fc[0],
+                    "value": format_feature_value(fc[0], feature_values[fc[0]], categorical_mappings),
+                    "contribution_diff": float(fc[1]),
+                }
+                for fc in diff_contributions[:3]
+            ]
+    
+    # Build reasoning text
+    reasoning_parts = []
+    
+    # Why this product was recommended
+    reasoning_parts.append("## Why This Product Was Recommended")
+    reasoning_parts.append(f"The model predicts **{pred_product}** with {pred_prob:.1%} confidence.")
+    reasoning_parts.append("\n**Top Contributing Features (Supporting Prediction):**")
+    
+    for i, (feat_name, shap_val) in enumerate(top_positive[:5], 1):
+        feat_value = format_feature_value(feat_name, feature_values[feat_name], categorical_mappings)
+        impact = "🔥 High" if abs(shap_val) > 0.1 else "⭐ Moderate" if abs(shap_val) > 0.05 else "📊 Low"
+        reasoning_parts.append(f"{i}. **{feat_name}** = {feat_value} ({impact} impact: +{shap_val:.4f})")
+    
+    if top_negative:
+        reasoning_parts.append("\n**Features Reducing Confidence:**")
+        for i, (feat_name, shap_val) in enumerate(top_negative[:3], 1):
+            feat_value = format_feature_value(feat_name, feature_values[feat_name], categorical_mappings)
+            reasoning_parts.append(f"{i}. **{feat_name}** = {feat_value} (reducing confidence: {shap_val:.4f})")
+    
+    # Confidence score explanation
+    reasoning_parts.append("\n## Confidence Score Analysis")
+    if pred_prob >= 0.7:
+        reasoning_parts.append(f"**High Confidence ({pred_prob:.1%})**: Strong feature alignment with {pred_product} patterns.")
+    elif pred_prob >= 0.5:
+        reasoning_parts.append(f"**Moderate Confidence ({pred_prob:.1%})**: Reasonable alignment, but some uncertainty remains.")
     else:
-        shap_values = shap_values.transpose(1, 0, 2)  # Try transpose
-        shap_array = np.array([shap_values[i, :, pred_class_ids[i]] for i in range(len(pred_with_features))])
-else:
-    shap_array = shap_values
+        reasoning_parts.append(f"**Low Confidence ({pred_prob:.1%})**: Weak feature alignment; consider reviewing alternative products.")
+    
+    # Why other products weren't predicted
+    reasoning_parts.append("\n## Why Other Products Were Not Predicted")
+    reasoning_parts.append("**Top Alternative Products:**")
+    
+    for alt in top_alternatives:
+        prob_diff = pred_prob - alt["probability"]
+        reasoning_parts.append(f"- **{alt['product']}**: {alt['probability']:.1%} probability (gap: {prob_diff:.1%})")
+    
+    if alternative_reasons:
+        reasoning_parts.append("\n**Key Differences from Top Alternative:**")
+        for reason in alternative_reasons[:3]:
+            reasoning_parts.append(f"- **{reason['feature']}** = {reason['value']} (contribution difference: {reason['contribution_diff']:+.4f})")
+    
+    return {
+        "cont_id": cont_id,
+        "predicted_product": pred_product,
+        "prediction_confidence": pred_prob,
+        "reasoning_text": "\n".join(reasoning_parts),
+        "top_positive_features": [
+            {
+                "feature": feat_name,
+                "value": format_feature_value(feat_name, feature_values[feat_name], categorical_mappings),
+                "shap_contribution": float(shap_val),
+            }
+            for feat_name, shap_val in top_positive[:5]
+        ],
+        "top_negative_features": [
+            {
+                "feature": feat_name,
+                "value": format_feature_value(feat_name, feature_values[feat_name], categorical_mappings),
+                "shap_contribution": float(shap_val),
+            }
+            for feat_name, shap_val in top_negative[:3]
+        ],
+        "top_alternatives": top_alternatives,
+        "alternative_reasons": alternative_reasons,
+    }
 
-print(f"✓ Computed SHAP values: {shap_array.shape}")
 
-# Also compute SHAP values for all classes (for comparative analysis)
-if isinstance(shap_values, list):
-    shap_all_classes = shap_values  # Already in list format
-elif isinstance(shap_values, np.ndarray) and len(shap_values.shape) == 3:
-    # Convert to list format for easier access
-    if shap_values.shape[0] == len(pred_with_features):
-        shap_all_classes = [shap_values[:, :, i] for i in range(shap_values.shape[2])]
+# Generate reasoning for all predictions
+reasoning_list = []
+print(f"Generating reasoning for {len(pred_with_features):,} predictions...")
+
+for idx in range(len(pred_with_features)):
+    if (idx + 1) % 1000 == 0:
+        print(f"  Processed {idx + 1:,} / {len(pred_with_features):,}...")
+    
+    row = pred_with_features.iloc[idx]
+    
+    # Get SHAP values for this prediction
+    if isinstance(shap_all_classes, list) and len(shap_all_classes) > 0:
+        pred_class_id = int(row["pred_class_id"]) if "pred_class_id" in row else pred_class_ids[idx]
+        if pred_class_id < len(shap_all_classes):
+            if isinstance(shap_all_classes[pred_class_id], np.ndarray):
+                if len(shap_all_classes[pred_class_id].shape) == 2:
+                    shap_for_pred = shap_all_classes[pred_class_id][idx]
+                else:
+                    shap_for_pred = shap_all_classes[pred_class_id]
+            else:
+                shap_for_pred = shap_array[idx]
+        else:
+            shap_for_pred = shap_array[idx]
     else:
-        shap_all_classes = [shap_values[i, :, :].T for i in range(shap_values.shape[0])]
-else:
-    shap_all_classes = [shap_array]  # Single class
+        shap_for_pred = shap_array[idx]
+    
+    # Get all probabilities
+    all_probs = pred_probs[idx]
+    
+    reasoning = generate_reasoning(
+        cont_id=str(row["cont_id"]),
+        pred_product=str(row.get("predicted_product", row.get("pred_product", "UNKNOWN"))),
+        pred_prob=float(row["pred_prob"]),
+        all_probs=all_probs,
+        feature_values=row[feature_cols],
+        shap_contributions=shap_for_pred,
+        shap_all_classes=shap_all_classes,
+        feature_cols=feature_cols,
+        final_id2prod=final_id2prod,
+        categorical_mappings=categorical_mappings,
+    )
+    
+    reasoning_list.append(reasoning)
 
-# Update feature_cols to match what we actually used
-feature_cols = feature_cols_to_use
-
-print(f"✓ SHAP analysis complete")
+print(f"✓ Generated reasoning for {len(reasoning_list):,} predictions")
