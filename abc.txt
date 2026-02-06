@@ -1,7 +1,31 @@
-
-In a new cell, i want to compare and see if any clients who has a single product in the last month, took a second product 
-this month-if so, which product.
-so, take the axa_party_id of clients in max_business_month from eda_smartlist.us_wealth_management_smartlist.ML_predictions_95_single_policy table. 
-search if these clients bought a second product. if, so, we need to write to the table 
-'eda_smartlist.us_wealth_management_smartlist.ML_predictions_comparision'. 
-it should have axa_party_id, first_product_category, predicted_product (from ML_predictions_95_single_policy table), actual_product_bought
+Current Situation
+The model is trained only once.
+The trained model is saved as an artifact.
+The same model is reused for every monthly pipeline run.
+No retraining happens in subsequent months.
+Problem
+The model does not learn from new data.
+There is no feedback loop to decide when retraining is required.
+Over time, this can lead to model drift and degraded performance.
+Requirement
+Introduce a feedback loop in the pipeline.
+The feedback loop should automatically decide when to retrain the model.
+Retraining should be event-driven, not blindly done every month.
+One Proposed Approach (Example)
+Create a table to store clients who have ≥ 2 products at the time of model training.
+This table acts as a baseline snapshot.
+Monthly Pipeline Logic
+During every monthly pipeline run:
+Identify clients with ≥ 2 products in the current month.
+Exclude clients already present in the baseline table.
+Count the new clients who now meet this condition.
+Retraining Trigger Condition
+Compare the number of new qualifying clients with a predefined threshold.
+If the increase exceeds the threshold:
+Trigger the model retraining pipeline.
+If not:
+Continue using the existing trained model.
+Outcome
+Model retraining happens only when there is meaningful data change.
+Prevents unnecessary retraining.
+Ensures the model stays relevant and up to date.
