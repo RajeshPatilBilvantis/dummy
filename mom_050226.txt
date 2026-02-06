@@ -15,3 +15,10 @@ Feature Enhancement Analysis
 Explore additional databases/tables to identify new features.
 
 Analyze whether these features can improve model performance and retraining.
+
+
+
+i also want global perspctive of shap.
+so,take the eda_smartlist.us_wealth_management_smartlist.ML_predictions_single_policy table (this has model predictions and more). 
+divide the clients(axa_party_id) into 2 buckets - one for clients who has pred_prob>=0.90 and one for clients who has pred_prob<=0.80. 
+asses and compare the reasons (features) for them to get a particular predicted_product.
